@@ -1,0 +1,10 @@
+{
+  "name": "tablean-smart-tab-memory-saver",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "icons": "node scripts/generate-icons.mjs",
+    "test": "node --test tests/background.test.mjs"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "TabLean — Smart Tab Memory Saver",
+  "short_name": "TabLean",
+  "version": "2.1.0",
+  "description": "Automatically discard idle tabs in collapsed groups without removing tabs or groups.",
+  "minimum_chrome_version": "121",
+  "permissions": [
+    "alarms",
+    "storage",
+    "tabGroups",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "TabLean",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TabLean Activity</title>
+    <link rel="stylesheet" href="activity.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="page-header">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div><p>TabLean</p><h1>Activity</h1></div>
+        </div>
+        <button id="status-button" class="status-button" type="button" aria-pressed="true">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-label">Enabled</span>
+        </button>
+      </header>
+
+      <section class="metric-grid" aria-label="Current activity metrics">
+        <article class="metric-card"><span>Unloaded now</span><strong id="discarded-now">0</strong><small>verified this browser session</small></article>
+        <article class="metric-card"><span>Total actions</span><strong id="total-actions">0</strong><small>successful tab unloads</small></article>
+        <article class="metric-card"><span>Collapsed groups</span><strong id="collapsed-groups">0</strong><small>currently monitored</small></article>
+        <article class="metric-card"><span>Grouped tabs</span><strong id="collapsed-tabs">0</strong><small>inside collapsed groups</small></article>
+      </section>
+
+      <aside class="memory-note">
+        <span aria-hidden="true">i</span>
+        <p><strong>Memory saved: not measurable by stable Chrome.</strong> Stable extension APIs confirm exactly which tabs were unloaded, but do not report the memory released by each action. Chrome Task Manager can show live process memory; TabLean will not invent an estimate.</p>
+      </aside>
+
+      <section class="log-card">
+        <div class="log-header">
+          <div><h2>Event log</h2><p>Stored locally on this device</p></div>
+          <button id="clear-button" class="quiet-button" type="button">Clear</button>
+        </div>
+        <div id="activity-list" class="activity-list" aria-live="polite"></div>
+      </section>
+
+      <p class="console-note">Raw console: <code>chrome://extensions</code> → TabLean → service worker</p>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="activity.js"></script>
+  </body>
+</html>

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TabLean</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <h1>TabLean</h1>
+        </div>
+        <button id="activity-button" class="activity-button" type="button">
+          <span class="activity-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+          Activity
+        </button>
+      </header>
+
+      <section class="settings-card glass-card" aria-labelledby="strength-title">
+        <div class="range-label">
+          <label id="strength-title" for="optimization-strength">Sensitivity</label>
+          <output id="strength-output" for="optimization-strength">Aggressive</output>
+        </div>
+        <input id="optimization-strength" type="range" min="0" max="100" step="10" value="80" />
+        <div class="range-scale strength-scale" aria-hidden="true">
+          <span>Gentle</span><span>Balanced</span><span>Maximum</span>
+        </div>
+        <p class="strength-hint">Collapsed groups are optimized automatically.</p>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
