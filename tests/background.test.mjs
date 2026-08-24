@@ -5,6 +5,9 @@ import vm from "node:vm";
 
 const backgroundSource = await readFile(new URL("../background.js", import.meta.url), "utf8");
 
+const TAB_ORDER_MUTATING_API =
+  /chrome\.(?:tabs\.(?:create|duplicate|group|move|remove|ungroup)|tabGroups\.move)\s*\(/;
+
 class ChromeEvent {
   listeners = [];
 
@@ -193,6 +196,28 @@ test("active and audible tabs are never discarded", async () => {
   assert.equal(harness.state.discardCalls.length, 0);
   assert.equal(harness.state.tabs.get(1).discarded, false);
   assert.equal(harness.state.tabs.get(2).discarded, false);
+});
+
+test("optimization preserves tab order and group membership", async () => {
+  const tabs = [
+    idleTab({ id: 11, index: 4, title: "First" }),
+    idleTab({ id: 12, index: 5, title: "Second" }),
+    idleTab({ id: 13, index: 6, title: "Third" }),
+  ];
+  const harness = createHarness({ groups: [collapsedGroup], tabs });
+  const placementBefore = tabs.map(({ id, index, groupId }) => ({ id, index, groupId }));
+
+  await harness.events.installed.emitAsync();
+
+  const placementAfter = [...harness.state.tabs.values()].map(
+    ({ id, index, groupId }) => ({ id, index, groupId }),
+  );
+  assert.deepEqual(placementAfter, placementBefore);
+  assert.deepEqual(harness.state.discardCalls, [11, 12, 13]);
+});
+
+test("background does not use APIs that can reorder or rebuild grouped tabs", () => {
+  assert.doesNotMatch(backgroundSource, TAB_ORDER_MUTATING_API);
 });
 
 test("sensitivity controls whether a recent background tab is discarded", async () => {

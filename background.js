@@ -133,6 +133,8 @@ async function optimizeCollapsedGroup(groupId) {
 
   const discardResults = await Promise.all(
     candidates.map(async (tab) => {
+      // Keep optimization discard-only. Moving, regrouping, removing, or
+      // recreating tabs would change Chrome's saved tab-group sync data.
       const result = await chrome.tabs.discard(tab.id).catch(() => null);
       return result ? tab : null;
     }),

@@ -10,6 +10,10 @@ TabLean starts watching a group when you collapse it. It considers how recently 
 
 The sensitivity control changes how readily TabLean unloads an idle tab. The Activity page shows successful unloads and keeps a short local history. It does not show an invented memory estimate because Chrome does not provide reliable memory figures for individual discarded tabs.
 
+### Chrome tab-group sync
+
+TabLean does not move, regroup, close, or recreate tabs. It only asks Chrome to discard eligible page contents from memory, leaving each tab in the same group and position. Chrome remains solely responsible for syncing saved tab groups and their tab order between devices.
+
 ## Install locally
 
 1. Download or clone this repository.
