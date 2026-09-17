@@ -36,6 +36,7 @@ All source files live at the repository root, with no bundler.
 - tabs.onUpdated covers group, audio, loading, auto-discardability, reload, and URL transitions, but skips ungrouped tabs unless changeInfo.groupId is set; tabs.onCreated skips them outright. Without that filter every tab event in the browser aborts the in-flight sweep. Already-discarded tabs do not trigger another sweep. New eligibility rules need matching events.
 - Read settings before arming the recovery alarm so a paused extension does no alarm or storage work per event. A failed settings read still arms a retry.
 - Packed Chrome enforces a 30s minimum alarm delay. Preserve earlier alarms; recreating an imminent alarm can postpone it. Normal worker startup reconciles without resetting history. Legacy per-group/closing alarms and tabUsageData are removed.
+- chrome.tabs.discard() reassigns the tab's id. The returned tab carries the new id; the old id ceases to exist. Chrome fires tabs.onReplaced(newId, oldId) then tabs.onUpdated(newId, {discarded: true, status: "unloaded"}, tab). The onUpdated guard (`if (tab.discarded) return`) prevents discard events from aborting in-flight sweeps via requestReview(). Any post-discard tracking (managedTabIds, onRemoved pruning) must use the post-discard id from the return value, not the pre-discard id. Do not read title from the returned object since it may be unpopulated. managedTabIds is reconciled against live tabs at the tail of each completed sweep to clear stale entries.
 - isEligible() skips active, audible, loading, private, opted-out, and discarded tabs, plus excluded hostnames and subdomains. Metadata cannot detect all unsaved work. Do not claim full Memory Saver protections.
 
 ## Idle Policy
@@ -48,7 +49,7 @@ Stored settings normalize leniently and user patches strictly. A corrupt stored 
 
 ## Testing
 
-Tests use Node's built-in node:test and node:vm. The Chrome harness models native discard rejection for active/already-discarded tabs, API-generated discard events, one-shot alarm consumption, and Chrome's alarm floor.
+Tests use Node's built-in node:test and node:vm. The Chrome harness models native discard rejection for active/already-discarded tabs, discard id reassignment with onReplaced and the subsequent onUpdated, one-shot alarm consumption, and Chrome's alarm floor.
 
 Use harness.restart() to create a fresh VM sharing Chrome state, then await wake.flush(). Normal worker wakes do not emit installation/startup events; the module itself requests reconciliation.
 

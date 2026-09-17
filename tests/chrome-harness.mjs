@@ -27,14 +27,15 @@ class ChromeEvent {
 export function createHarness({ groups = [], tabs = [], stored = {}, session = {}, sharedState } = {}) {
   const state = sharedState || {
     now: NOW, alarms: new Map(), discardCalls: [], errors: [], logs: [],
+    nextTabId: Math.max(0, ...tabs.map(t => t.id)) + 1000,
     groups: new Map(groups.map(group => [group.id, structuredClone(group)])),
     tabs: new Map(tabs.map(tab => [tab.id, structuredClone(tab)])),
     storage: structuredClone(stored), sessionStorage: structuredClone(session),
   };
   const listenerErrors = [];
   const events = Object.fromEntries(["alarm", "installed", "startup", "message", "tabActivated",
-    "tabCreated", "tabRemoved", "tabUpdated", "tabGroupCreated", "tabGroupUpdated", "tabGroupRemoved"]
-    .map(name => [name, new ChromeEvent(listenerErrors)]));
+    "tabCreated", "tabRemoved", "tabReplaced", "tabUpdated", "tabGroupCreated", "tabGroupUpdated",
+    "tabGroupRemoved"].map(name => [name, new ChromeEvent(listenerErrors)]));
   function storageArea(key) {
     return {
       get: async keys => {
@@ -82,13 +83,18 @@ export function createHarness({ groups = [], tabs = [], stored = {}, session = {
       discard: async id => {
         const tab = state.tabs.get(id);
         if (!tab || tab.active || tab.discarded) throw new Error("Cannot discard tab");
-        tab.discarded = true;
+        // Chrome reassigns the tab id on discard, fires onReplaced then onUpdated.
+        const newId = state.nextTabId++;
+        const newTab = { ...tab, id: newId, discarded: true, status: "unloaded" };
+        state.tabs.delete(id);
+        state.tabs.set(newId, newTab);
         state.discardCalls.push(id);
-        events.tabUpdated.emit(id, { discarded: true }, structuredClone(tab));
-        return structuredClone(tab);
+        events.tabReplaced.emit(newId, id);
+        events.tabUpdated.emit(newId, { discarded: true, status: "unloaded" }, structuredClone(newTab));
+        return structuredClone(newTab);
       },
       onActivated: events.tabActivated, onCreated: events.tabCreated, onRemoved: events.tabRemoved,
-      onUpdated: events.tabUpdated,
+      onReplaced: events.tabReplaced, onUpdated: events.tabUpdated,
     },
   };
   class ClockDate extends Date {

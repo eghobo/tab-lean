@@ -266,7 +266,9 @@ async function reviewCollapsedTabs(revision) {
         continue;
       }
       if (!discardedByGroup.has(group.id)) discardedByGroup.set(group.id, { group, tabs: [] });
-      discardedByGroup.get(group.id).tabs.push(tab);
+      // Use the post-discard id (Chrome reassigns tab ids on discard) but
+      // keep the pre-discard title since the returned object may omit it.
+      discardedByGroup.get(group.id).tabs.push({ ...tab, id: result.id });
     } catch (error) {
       console.error("[TabLean] Could not discard tab", tab.id, error);
     }
@@ -289,6 +291,23 @@ async function reviewCollapsedTabs(revision) {
 
   const currentTabs = await chrome.tabs.query({});
   if (revision !== reviewRevision) return;
+
+  // Opportunistic: reconcile managedTabIds against live tabs. Stale entries
+  // from missed onRemoved events or pre-fix persisted old discard ids are
+  // dropped here instead of growing without bound. Skipped on early returns
+  // (disabled, revision mismatch) which is fine - normal operation always
+  // completes a sweep eventually, so the set stays bounded.
+  await queueActivity(async () => {
+    const { activityStats = {} } = await chrome.storage.local.get("activityStats");
+    const ids = activityStats.managedTabIds || [];
+    if (!ids.length) return;
+    const liveIds = new Set(currentTabs.map(tab => tab.id));
+    const filtered = ids.filter(id => liveIds.has(id));
+    if (filtered.length !== ids.length) {
+      await chrome.storage.local.set({ activityStats: { ...activityStats, managedTabIds: filtered } });
+    }
+  });
+
   const nextReview = currentTabs.reduce((next, tab) =>
     groupIds.has(tab.groupId) && isEligible(tab, settings)
       ? Math.min(next, eligibleAt(tab, settings)) : next, Infinity);

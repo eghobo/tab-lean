@@ -29,8 +29,8 @@ test("collapsing an old group waits for grace then unloads without changing plac
   assert.deepEqual(h.state.discardCalls, []);
   await h.advance(1);
   assert.deepEqual(h.state.discardCalls, [1, 2]);
-  assert.deepEqual([...h.state.tabs.values()].map(({ id, index, groupId }) => ({ id, index, groupId })),
-    [{ id: 1, index: 4, groupId: 7 }, { id: 2, index: 5, groupId: 7 }]);
+  assert.deepEqual([...h.state.tabs.values()].map(({ index, groupId }) => ({ index, groupId })),
+    [{ index: 4, groupId: 7 }, { index: 5, groupId: 7 }]);
   assert.equal(h.state.groups.size, 1);
   assert.equal(h.state.alarms.size, 0);
 });
@@ -111,7 +111,8 @@ test("several collapsed groups share one alarm", async () => {
 });
 
 test("a worker wake restores an alarm without resetting activity history", async () => {
-  const h = managed({ tabs: [idleTab({ lastAccessed: NOW })],
+  const h = managed({ tabs: [idleTab({ lastAccessed: NOW }),
+    idleTab({ id: 42, groupId: 7, discarded: true })],
     stored: { settings, activityStats: { totalDiscardActions: 9, managedTabIds: [42] },
       activityLog: [{ timestamp: NOW - 1, message: "Existing history" }] } });
   await h.flush();
@@ -497,6 +498,56 @@ test("the recovery alarm does not abort an in-flight sweep", { timeout: 2000 }, 
   assert.deepEqual(h.state.discardCalls, [1, 2]);
   // A single activity entry proves both tabs were discarded in one uninterrupted
   // pass. If the alarm aborted the sweep, each tab would be a separate entry.
+  assert.equal(h.state.storage.activityLog.length, 1);
+  assert.equal(h.state.storage.activityLog[0].discardedCount, 2);
+});
+
+test("discarding a tab records the post-discard id so the discardedTabCount metric counts it", async () => {
+  const h = managed();
+  await review(h);
+  assert.deepEqual(h.state.discardCalls, [1]);
+  // The live tab carries the post-discard id. The metric must match it.
+  const result = await h.message({ type: "getActivityState" });
+  assert.equal(result.metrics.discardedTabCount, 1);
+  const liveIds = [...h.state.tabs.keys()];
+  assert.notEqual(liveIds[0], 1, "discard reassigned the tab id");
+  assert.ok(h.state.storage.activityStats.managedTabIds.includes(liveIds[0]));
+});
+
+test("closing a discarded tab by its post-discard id prunes it from managedTabIds", async () => {
+  const h = managed();
+  await review(h);
+  const newId = [...h.state.tabs.keys()][0];
+  h.state.tabs.delete(newId);
+  await h.fire("tabRemoved", newId);
+  assert.deepEqual(h.state.storage.activityStats.managedTabIds, []);
+});
+
+test("a stale managed id for a tab that no longer exists is dropped on wake", async () => {
+  const h = managed({ tabs: [idleTab({ discarded: true })],
+    stored: { settings, activityStats: { totalDiscardActions: 5, managedTabIds: [999] } } });
+  await h.flush();
+  const wake = h.restart();
+  await wake.flush();
+  assert.ok(!wake.state.storage.activityStats.managedTabIds.includes(999));
+  assert.equal(wake.state.storage.activityStats.totalDiscardActions, 5);
+});
+
+test("activity entry tabTitles use the pre-discard title after the id change", async () => {
+  const h = managed({ tabs: [idleTab({ title: "My Important Document" })] });
+  await review(h);
+  const log = h.state.storage.activityLog;
+  assert.equal(log.length, 1);
+  assert.deepEqual(log[0].tabTitles, ["My Important Document"]);
+});
+
+test("discard-generated onUpdated does not abort the in-flight sweep", async () => {
+  const h = managed({ tabs: [idleTab(), idleTab({ id: 2 })] });
+  await review(h);
+  assert.deepEqual(h.state.discardCalls, [1, 2]);
+  // Both tabs discarded in one sweep = one activity entry. If the onUpdated
+  // from the first discard caused requestReview(), the revision bump would
+  // abort the sweep after the first tab, producing two separate entries.
   assert.equal(h.state.storage.activityLog.length, 1);
   assert.equal(h.state.storage.activityLog[0].discardedCount, 2);
 });
