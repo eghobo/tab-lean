@@ -115,6 +115,10 @@ function createHarness({ groups = [], tabs = [], stored = {} } = {}) {
         state.discardCalls.push(id);
         return structuredClone(state.tabs.get(id));
       },
+      get: async (id) => {
+        if (!state.tabs.has(id)) throw new Error("No tab");
+        return structuredClone(state.tabs.get(id));
+      },
       onActivated: events.tabActivated,
       onCreated: events.tabCreated,
       onRemoved: events.tabRemoved,
@@ -322,8 +326,10 @@ test("tab activation counts persist and reload on alarm wake (simulated SW resta
   await harness1.events.installed.emitAsync();
 
   for (let i = 0; i < 7; i++) {
-    await harness1.events.tabActivated.emitAsync({ tabId: 1 });
+    harness1.events.tabActivated.emit({ tabId: 1 });
+    await new Promise((r) => setTimeout(r, 10));
   }
+  await new Promise((r) => setTimeout(r, 50));
 
   assert.ok(harness1.state.sessionStorage.tabUsageData);
   const saved = harness1.state.sessionStorage.tabUsageData;
@@ -343,6 +349,63 @@ test("tab activation counts persist and reload on alarm wake (simulated SW resta
     harness2.state.tabs.get(1).discarded,
     false,
     "tab with 7 activations should be kept by repeat-use scoring after SW restart",
+  );
+});
+
+test("tab removal on cold wake does not wipe persisted activation history", async () => {
+  const harness1 = createHarness({
+    groups: [collapsedGroup],
+    tabs: [idleTab({ id: 1 }), idleTab({ id: 2 })],
+  });
+  await harness1.events.installed.emitAsync();
+
+  for (let i = 0; i < 5; i++) {
+    harness1.events.tabActivated.emit({ tabId: 2 });
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  await new Promise((r) => setTimeout(r, 50));
+
+  const saved = harness1.state.sessionStorage.tabUsageData;
+  const tab2 = saved.find(([id]) => id === 2);
+  assert.equal(tab2[1].activationCount, 5);
+
+  const harness2 = createHarness({
+    groups: [collapsedGroup],
+    tabs: [idleTab({ id: 1 }), idleTab({ id: 2 }), idleTab({ id: 3 })],
+  });
+  harness2.state.sessionStorage = harness1.state.sessionStorage;
+
+  harness2.events.tabRemoved.emit(3);
+  await new Promise((r) => setTimeout(r, 50));
+
+  const afterRemove = harness2.state.sessionStorage.tabUsageData;
+  const tab2After = afterRemove.find(([id]) => id === 2);
+  assert.ok(tab2After, "tab 2 activation data must survive removal of unrelated tab 3");
+  assert.equal(tab2After[1].activationCount, 5);
+});
+
+test("switching away from active tab in collapsed group triggers optimization", async () => {
+  const activeTab = idleTab({ id: 1, active: true });
+  const otherTab = idleTab({ id: 2, groupId: -1 });
+  const harness = createHarness({
+    groups: [collapsedGroup],
+    tabs: [activeTab, otherTab],
+  });
+  await harness.events.installed.emitAsync();
+
+  assert.equal(harness.state.tabs.get(1).discarded, false);
+  assert.equal(harness.state.alarms.size, 0, "no alarm since only tab was active");
+
+  harness.events.tabActivated.emit({ tabId: 1 });
+  await new Promise((r) => setTimeout(r, 10));
+
+  harness.state.tabs.get(1).active = false;
+  harness.events.tabActivated.emit({ tabId: 2 });
+  await new Promise((r) => setTimeout(r, 50));
+
+  assert.ok(
+    harness.state.tabs.get(1).discarded || harness.state.alarms.size > 0,
+    "switching away must either discard the tab or schedule a review alarm",
   );
 });
 

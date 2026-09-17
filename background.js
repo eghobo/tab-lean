@@ -6,18 +6,22 @@ const DEFAULT_SETTINGS = Object.freeze({
 const REVIEW_ALARM_PREFIX = "review-group:";
 const LEGACY_ALARM_PREFIXES = ["close-group:", "close-tab:"];
 let tabUsage = new Map();
-let tabUsageLoaded = false;
+let tabUsageLoad = null;
 let activityQueue = Promise.resolve();
 const optimizeInFlight = new Map();
 
-async function ensureTabUsageLoaded() {
-  if (tabUsageLoaded) return;
-  const { tabUsageData } = await chrome.storage.session.get("tabUsageData");
-  if (tabUsageData) tabUsage = new Map(tabUsageData);
-  tabUsageLoaded = true;
+function ensureTabUsageLoaded() {
+  if (!tabUsageLoad) {
+    tabUsageLoad = chrome.storage.session.get("tabUsageData").then((data) => {
+      if (data.tabUsageData) tabUsage = new Map(data.tabUsageData);
+    });
+    tabUsageLoad.catch(() => { tabUsageLoad = null; });
+  }
+  return tabUsageLoad;
 }
 
 async function saveTabUsage() {
+  await ensureTabUsageLoaded();
   await chrome.storage.session.set({ tabUsageData: [...tabUsage] });
 }
 
@@ -66,7 +70,7 @@ function optimizationIntensity(settings) {
 
 function reviewDelay(settings) {
   const intensity = optimizationIntensity(settings);
-  return Math.max(60_000, Math.round(60_000 + (1 - intensity) * 240_000));
+  return Math.round(30_000 + (1 - intensity) * 270_000);
 }
 
 async function recordTabActivation(tabId) {
@@ -180,12 +184,18 @@ async function optimizeCollapsedGroupImpl(groupId, preloadedSettings) {
     });
   }
 
+  const currentSettings = await getSettings();
+  if (!currentSettings.extensionEnabled) {
+    await clearReviewAlarm(groupId);
+    return;
+  }
+
   const currentTabs = await chrome.tabs.query({ groupId });
   const hasDiscardableTabs = currentTabs.some(
     (tab) => !tab.discarded && !tab.active && !tab.audible,
   );
   if (hasDiscardableTabs) {
-    await scheduleNextReview(groupId, settings);
+    await scheduleNextReview(groupId, currentSettings);
   } else {
     await clearReviewAlarm(groupId);
   }
@@ -306,8 +316,24 @@ chrome.tabGroups.onRemoved.addListener((group) => {
   return clearReviewAlarm(group.id).catch(console.error);
 });
 
+let lastActiveTabId = null;
+
 chrome.tabs.onActivated.addListener(({ tabId }) => {
+  const previousTabId = lastActiveTabId;
+  lastActiveTabId = tabId;
   recordTabActivation(tabId).catch(console.error);
+
+  if (previousTabId !== null) {
+    chrome.tabs.get(previousTabId).then((prev) => {
+      if (prev.groupId !== undefined && prev.groupId !== -1) {
+        return chrome.tabGroups.get(prev.groupId).then((group) => {
+          if (group.collapsed) return optimizeCollapsedGroup(group.id);
+          return null;
+        });
+      }
+      return null;
+    }).catch(() => {});
+  }
 });
 
 chrome.tabs.onCreated.addListener((tab) => {

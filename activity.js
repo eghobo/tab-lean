@@ -12,7 +12,7 @@ const elements = {
 };
 
 let currentSettings = { extensionEnabled: true, optimizationStrength: 80 };
-let lastLogLength = 0;
+let lastNewestTimestamp = 0;
 let toastTimer;
 
 function showToast(message, isError = false) {
@@ -44,12 +44,18 @@ function activityIcon(type) {
 }
 
 function renderLog(activityLog) {
-  const newCount = activityLog.length - lastLogLength;
-  if (newCount > 0 && lastLogLength > 0) {
-    const newest = activityLog.slice(0, newCount).map((e) => e.message).join(". ");
-    elements.activityAnnounce.textContent = newest;
+  if (activityLog.length && lastNewestTimestamp > 0) {
+    const newEntries = activityLog.filter((e) => e.timestamp > lastNewestTimestamp);
+    if (newEntries.length) {
+      elements.activityAnnounce.textContent = "";
+      requestAnimationFrame(() => {
+        elements.activityAnnounce.textContent = newEntries.map((e) => e.message).join(". ");
+      });
+    }
   }
-  lastLogLength = activityLog.length;
+  if (activityLog.length) {
+    lastNewestTimestamp = activityLog[0].timestamp;
+  }
 
   if (!activityLog.length) {
     const empty = document.createElement("div");
@@ -123,7 +129,7 @@ elements.statusButton.addEventListener("click", async () => {
 
 elements.clearButton.addEventListener("click", async () => {
   elements.clearButton.disabled = true;
-  lastLogLength = 0;
+  lastNewestTimestamp = 0;
   try {
     renderState(await sendMessage({ type: "clearActivity" }));
   } catch (error) {
