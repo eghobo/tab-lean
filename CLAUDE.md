@@ -1,63 +1,63 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to agents working in this repository.
 
 ## What This Is
 
-TabLean is a Chrome extension (Manifest V3) that discards idle tabs inside collapsed tab groups to free memory. It never closes, moves, regroups, or recreates tabs - only calls `chrome.tabs.discard()`. No network requests, no remote code, no external dependencies.
+TabLean is a Chrome extension (Manifest V3) that discards idle tabs inside collapsed tab groups to free memory. Background management never closes, moves, regroups, or recreates tabs; it only calls Chrome's native discard API. No network requests, remote code, content scripts, or external dependencies.
 
 ## Commands
 
 ```sh
-npm test              # run all tests (node:test, no framework)
+npm test              # run core and popup tests (node:test)
 npm run icons         # regenerate PNG icons from the procedural generator
 ```
 
-There is no build step. The extension loads directly from the repo root as an unpacked extension.
+There is no linter or build step. The extension loads directly from the repository root as an unpacked extension. Use Node syntax checks for modified JavaScript files.
 
 ## Architecture
 
-All source files live at the repo root (no src/ directory, no bundler).
+All source files live at the repository root, with no bundler.
 
-- **background.js** - Service worker. Core logic: importance scoring (`calculateImportance`), discard threshold calculation, alarm-based review scheduling for collapsed groups, activity logging to `chrome.storage.local`, and the message handler (`onMessage`) that popup and activity page use as their API. Tab usage data (activation counts) persists in `chrome.storage.session` via lazy-load (`ensureTabUsageLoaded`) - session storage survives SW restarts but clears on browser quit.
-- **popup.html/js/css** - Extension popup. Sensitivity slider (`optimizationStrength` 0-100) and link to activity page. Communicates with background via `chrome.runtime.sendMessage`.
-- **activity.html/js/css** - Full-page activity dashboard. Shows metrics (collapsed groups/tabs, discards) and a scrollable activity log. Has enable/disable toggle and clear-history button. Refreshes on `storage.onChanged` events, `visibilitychange`, and a 15s fallback interval.
-- **manifest.json** - Manifest V3. Permissions: `alarms`, `storage`, `tabGroups`, `tabs`. Minimum Chrome 121.
+- **background.js** - Service worker. Idle timeout based on Chrome's lastAccessed; no frequency scoring or activation history. requestReview() coalesces requests into a serial sweep with cancellation via reviewRevision. One review-tabs alarm schedules the next pass and recovery after failures. Collapse timestamps persist in chrome.storage.session via ensureReviewState(). Activity and settings use local storage.
+- **popup.html/js/css** - Sensitivity slider (optimizationStrength 0-100), effective timeout, hostname exclusions, and Activity link. Sends partial settings updates and ignores stale responses so saves do not overwrite newer edits.
+- **activity.html/js/css** - Dashboard with metrics, history, enable/disable toggle, and Clear button. Refreshes on storage.onChanged, visibilitychange, and a 15s visible-page fallback interval.
+- **manifest.json** - MV3. Permissions: alarms, storage, tabGroups, tabs. Minimum Chrome 121.
+- **tests/chrome-harness.mjs** - Mock Chrome APIs, deterministic clock, worker restarts, and controlled API-response races.
+- **tests/background.test.mjs**, **tests/popup.test.mjs** - Core and popup behavior tests.
 
-### Key Behavioral Constraints
+## Behavioral Constraints
 
-These are intentional design decisions, not oversights:
+- Background management must never call tabs.create/move/remove/group/ungroup or tabGroups.move. A source check enforces this. The popup can open its own Activity page on a user click.
+- Activity history is capped at 200 entries. Do not invent per-tab memory savings.
+- queueActivity() serializes history/statistics writes, including initialization, clear, and removal. settingsQueue serializes partial settings changes.
+- A review request invalidates stale candidates and marks the sweep dirty. An event during a sweep must cause another pass. Fresh tab/group reads precede each serial discard. Already-issued Chrome operations cannot be recalled.
+- Collapse grace is 30 seconds. Preserve timestamps across worker wakes, prune expanded/removed groups, and clear observation while disabled. Keep reviewStateDirty set until persistence succeeds.
+- tabs.onUpdated covers group, audio, loading, auto-discardability, reload, and URL transitions. Already-discarded tabs do not trigger another sweep. New eligibility rules need matching events.
+- Packed Chrome enforces a 30s minimum alarm delay. Preserve earlier alarms; recreating an imminent alarm can postpone it. Normal worker startup reconciles without resetting history. Legacy per-group/closing alarms and tabUsageData are removed.
+- isEligible() skips active, audible, loading, private, opted-out, and discarded tabs, plus excluded hostnames and subdomains. Metadata cannot detect all unsaved work. Do not claim full Memory Saver protections.
 
-- The extension must never use `chrome.tabs.create`, `chrome.tabs.move`, `chrome.tabs.remove`, `chrome.tabs.group`, `chrome.tabs.ungroup`, or `chrome.tabGroups.move`. The test suite enforces this with a regex check against `background.js` source.
-- Activity log is capped at 200 entries. No memory estimates are shown because Chrome doesn't provide reliable per-tab memory figures for discarded tabs.
-- `activityQueue` serializes storage writes to avoid races from concurrent discard events.
-- `optimizeInFlight` Map prevents concurrent `optimizeCollapsedGroup` calls for the same groupId from double-counting discards.
-- `ensureTabUsageLoaded()` must be called before any read of `tabUsage` - the Map starts empty on every SW wake. Any new consumer of `tabUsage` needs this call.
-- `tabs.onUpdated` triggers optimization on `audible`, `status === "complete"`, and `groupId` changes. If adding new discard-eligibility criteria, ensure the corresponding `changeInfo` property is checked here.
-- Chrome MV3 enforces a 30s minimum alarm delay for packed extensions (unpacked has no minimum). `reviewDelay()` range is 30s (max intensity) to 300s (min intensity).
+## Idle Policy
 
-### Tab Importance Scoring
+idleDelay() returns 30-300 seconds from sensitivity 100-0, respectively; the default 80 yields 84 seconds. A tab must meet both lastAccessed + idleDelay and collapsedSince + 30 seconds. The popup mirrors this formula for its preview; policy/display tests cover it.
 
-`calculateImportance()` returns 0-100 based on: recency (exponential decay, 180s time constant), repeat-use frequency (log scale), active tab bonus (+28), audible bonus (+20), loading bonus (+5). The `discardThreshold()` is derived from `optimizationStrength` setting.
+Settings use extensionEnabled, optimizationStrength, and excludedHosts. Exclusions are hostnames, matching the exact host and its subdomains. Popup and Activity must send only changed fields.
 
 ## Testing
 
-Tests use Node.js built-in `node:test` runner with `node:vm` to execute `background.js` in a sandboxed context with a mock `chrome` API harness. The harness simulates Chrome's alarms, storage, tabs, and tabGroups APIs.
+Tests use Node's built-in node:test and node:vm. The Chrome harness models native discard rejection for active/already-discarded tabs, API-generated discard events, one-shot alarm consumption, and Chrome's alarm floor.
 
-### MV3 Service Worker Gotcha
+Use harness.restart() to create a fresh VM sharing Chrome state, then await wake.flush(). Normal worker wakes do not emit installation/startup events; the module itself requests reconciliation.
 
-The SW terminates after ~30s idle. Any in-memory state (`let`/`const` at module scope) resets on every wake. The test harness runs background.js in a single vm context, so it cannot catch "state lost on restart" bugs by default. To test SW restart scenarios, create a second harness sharing the first's `sessionStorage` and fire events on it (see the wake-cycle test).
+Use harness.fire(eventName, ...args), or emit then await harness.flush(), to drain promise work. Use advance(milliseconds) for chronological alarm delivery and pauseCall() for controlled response races. Avoid wall-clock sleeps.
 
-### Test Timing
+Popup tests execute the real script with small DOM/API doubles. They do not replace live layout or accessibility testing. Load unpacked at chrome://extensions and reload after edits for live Chrome checks.
 
-Alarm and tab event listeners in background.js fire-and-forget (return value is not a promise). Tests that emit these events need `await new Promise(r => setTimeout(r, 50))` to let the async work settle before asserting.
+## Data and Privacy
 
-To test changes to the extension UI, load unpacked at `chrome://extensions` and reload after edits.
-
-## Constraints
-
-- No runtime dependencies (no node_modules in production)
-- No analytics, advertising, trackers, or external services
-- No remote code execution
-- All persisted activity and settings data stays in `chrome.storage.local`
-- Tab usage (activation counts) uses `chrome.storage.session` - survives SW restarts, cleared on browser quit
+- Settings and activity stay in chrome.storage.local.
+- Collapse timestamps use chrome.storage.session. It survives worker restarts and clears on extension disable, reload, update, or browser restart.
+- Activation counts are no longer collected. Legacy tabUsageData is removed on wake.
+- Incognito tabs are excluded from optimization and new history.
+- Legacy savedGroups recovery data is preserved; Clear Activity does not delete it.
+- No analytics, advertising, trackers, external services, or runtime dependencies.

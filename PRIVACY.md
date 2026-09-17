@@ -1,6 +1,6 @@
 # Privacy Policy for TabLean
 
-Last updated: August 24, 2026
+Last updated: September 17, 2026
 
 TabLean is designed to work entirely on your device. It has no accounts, analytics, advertisements, remote servers, or network requests.
 
@@ -8,7 +8,9 @@ TabLean is designed to work entirely on your device. It has no accounts, analyti
 
 TabLean reads the state of your Chrome tabs and tab groups so it can identify idle tabs inside groups you have collapsed. This includes whether a tab is active, audible, loading, recently accessed, grouped, or already discarded. Chrome may also provide the page title and address as part of the tab information available to the extension.
 
-When TabLean successfully unloads a tab, its Activity page stores the tab title, group title, time, and result in Chrome's local extension storage. The history is limited to the 200 most recent events. TabLean also stores the selected sensitivity and whether background optimization is enabled.
+When TabLean successfully unloads a tab, its Activity page stores the tab title, group title, time, and result in Chrome's local extension storage. The history is limited to the 200 most recent events. TabLean also stores the selected sensitivity, enabled state, successful unload counts, identifiers for tracked tabs, and hostnames you exclude from unloading.
+
+TabLean uses Chrome's last-activated timestamp to determine tab age. It does not collect activation counts. Group identifiers and collapse timestamps are kept in temporary extension session storage to preserve the grace period across service worker restarts. Incognito tabs are excluded from optimization and new Activity history.
 
 TabLean does not read page content, form entries, passwords, cookies, or authentication information. Browsing addresses are not added to the current Activity history.
 
@@ -18,11 +20,13 @@ Tab and group information is used only to decide whether Chrome should unload an
 
 ## Storage and sharing
 
-All TabLean information stays in Chrome's local extension storage on your device. It is not transmitted to the developer or shared, sold, or disclosed to another company or person.
+Settings and Activity history stay in Chrome's local extension storage on your device. Temporary collapse timestamps use `chrome.storage.session`, which clears on extension disable, reload, update, or browser restart. Nothing is transmitted to the developer or shared, sold, or disclosed to another company or person.
+
+Upgrades from early development versions may retain saved-group recovery data containing tab titles and addresses. This data stays in local storage and is not part of the current Activity history.
 
 ## Your controls
 
-You can clear the Activity history from the Activity page. You can also disable TabLean at any time. Removing the extension causes Chrome to remove its local extension data.
+You can clear the Activity history from the Activity page and edit excluded hostnames in the popup. Clear Activity does not remove settings or legacy saved-group recovery data. You can disable TabLean at any time. Removing the extension causes Chrome to remove its local extension data.
 
 ## Chrome Web Store Limited Use
 

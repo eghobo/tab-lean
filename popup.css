@@ -192,7 +192,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 input[type="range"]:focus-visible {
-  box-shadow: 0 0 0 3px rgb(101 212 195 / 13%);
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .range-scale {
@@ -204,9 +205,26 @@ input[type="range"]:focus-visible {
 .strength-hint {
   margin: 9px 0 0;
   color: var(--muted);
-  font-size: 8.5px;
-  line-height: 1.35;
+  font-size: 11px;
+  line-height: 1.4;
 }
+
+.exclusions-card { margin-top: 12px; color: var(--muted); font-size: 11px; }
+.exclusions-card summary { padding: 6px 0; color: var(--text); cursor: pointer; }
+.exclusions-card form { display: grid; gap: 8px; margin-top: 8px; }
+.exclusions-card label { color: var(--text); }
+.exclusions-card textarea {
+  width: 100%; min-height: 66px; padding: 8px; resize: vertical;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: #121719; color: var(--text); font: inherit;
+}
+.exclusions-card p { margin: 0; line-height: 1.4; }
+.exclusions-card button {
+  justify-self: end; padding: 5px 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: #263033; color: var(--text);
+}
+.exclusions-card :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled, input:disabled, textarea:disabled { opacity: 0.55; cursor: wait; }
 
 .toast {
   position: fixed;

@@ -26,12 +26,23 @@
           <label id="strength-title" for="optimization-strength">Sensitivity</label>
           <output id="strength-output" for="optimization-strength">Aggressive</output>
         </div>
-        <input id="optimization-strength" type="range" min="0" max="100" step="10" value="80" />
+        <input id="optimization-strength" type="range" min="0" max="100" step="10" value="80" disabled />
         <div class="range-scale strength-scale" aria-hidden="true">
           <span>Gentle</span><span>Balanced</span><span>Maximum</span>
         </div>
-        <p class="strength-hint">Collapsed groups are optimized automatically.</p>
+        <p id="idle-timeout" class="strength-hint">Loading settings...</p>
+        <p class="strength-hint">Waits at least 30 seconds after a group collapses.</p>
       </section>
+
+      <details class="exclusions-card">
+        <summary>Never unload these sites</summary>
+        <form id="exclusions-form">
+          <label for="excluded-hosts">Sites to keep loaded</label>
+          <textarea id="excluded-hosts" rows="3" placeholder="example.com" aria-describedby="exclusions-help" spellcheck="false" autocapitalize="off" disabled></textarea>
+          <p id="exclusions-help">One hostname per line, including its subdomains. Add editors and meeting sites here to keep them loaded.</p>
+          <button id="save-exclusions" type="submit" disabled>Save</button>
+        </form>
+      </details>
 
       <p id="disabled-notice" class="disabled-notice" hidden>Background optimization is paused. Enable it on the Activity page.</p>
     </main>

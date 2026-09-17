@@ -116,7 +116,6 @@ elements.statusButton.addEventListener("click", async () => {
       type: "updateSettings",
       settings: {
         extensionEnabled: !currentSettings.extensionEnabled,
-        optimizationStrength: currentSettings.optimizationStrength,
       },
     });
     await refresh();

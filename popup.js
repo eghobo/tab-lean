@@ -1,12 +1,18 @@
 const elements = {
   activityButton: document.querySelector("#activity-button"),
   disabledNotice: document.querySelector("#disabled-notice"),
+  excludedHosts: document.querySelector("#excluded-hosts"),
+  exclusionsForm: document.querySelector("#exclusions-form"),
+  idleTimeout: document.querySelector("#idle-timeout"),
   optimizationStrength: document.querySelector("#optimization-strength"),
+  saveExclusions: document.querySelector("#save-exclusions"),
   strengthOutput: document.querySelector("#strength-output"),
   toast: document.querySelector("#toast"),
 };
 
-let extensionEnabled = true;
+let viewRevision = 0;
+let exclusionsDirty = false;
+let savingExclusions = false;
 let toastTimer;
 
 function showToast(message, isError = false) {
@@ -30,13 +36,22 @@ function updateStrengthAppearance() {
   elements.strengthOutput.textContent = label;
   elements.optimizationStrength.style.setProperty("--range-progress", `${value}%`);
   elements.optimizationStrength.setAttribute("aria-valuetext", `${label}, ${value} percent`);
+  // Display the same 30-300 second policy used by background.js.
+  const seconds = Math.round(30 + (1 - value / 100) * 270);
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  const duration = [minutes ? `${minutes} min` : "", remainder ? `${remainder} sec` : ""].filter(Boolean).join(" ");
+  elements.idleTimeout.textContent = `Idle timeout: ${duration}.`;
 }
 
 function renderState(state) {
   const { settings } = state;
-  extensionEnabled = settings.extensionEnabled !== false;
   elements.optimizationStrength.value = settings.optimizationStrength ?? 80;
-  elements.disabledNotice.hidden = extensionEnabled;
+  elements.optimizationStrength.disabled = false;
+  elements.disabledNotice.hidden = settings.extensionEnabled !== false;
+  if (!exclusionsDirty) elements.excludedHosts.value = (settings.excludedHosts || []).join("\n");
+  elements.excludedHosts.disabled = savingExclusions;
+  elements.saveExclusions.disabled = savingExclusions;
   updateStrengthAppearance();
 }
 
@@ -56,20 +71,47 @@ function sendMessage(message) {
   });
 }
 
-async function saveSettings(enabled = extensionEnabled) {
+async function saveSettings(patch) {
+  const revision = ++viewRevision;
   const state = await sendMessage({
     type: "updateSettings",
-    settings: {
-      extensionEnabled: enabled,
-      optimizationStrength: elements.optimizationStrength.value,
-    },
+    settings: patch,
   });
-  renderState(state);
+  if (revision === viewRevision) renderState(state);
+  return state;
 }
 
-elements.optimizationStrength.addEventListener("input", updateStrengthAppearance);
+elements.optimizationStrength.addEventListener("input", () => {
+  viewRevision += 1;
+  updateStrengthAppearance();
+});
 elements.optimizationStrength.addEventListener("change", () => {
-  saveSettings().catch((error) => showToast(error.message, true));
+  saveSettings({ optimizationStrength: elements.optimizationStrength.value })
+    .catch((error) => showToast(error.message, true));
+});
+
+elements.excludedHosts.addEventListener("input", () => {
+  exclusionsDirty = true;
+  viewRevision += 1;
+});
+elements.exclusionsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  savingExclusions = true;
+  elements.excludedHosts.disabled = true;
+  elements.saveExclusions.disabled = true;
+  try {
+    const excludedHosts = elements.excludedHosts.value.split(/\r?\n/).map(host => host.trim()).filter(Boolean);
+    const state = await saveSettings({ excludedHosts });
+    exclusionsDirty = false;
+    elements.excludedHosts.value = state.settings.excludedHosts.join("\n");
+    showToast("Saved sites to keep loaded.");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    savingExclusions = false;
+    elements.excludedHosts.disabled = false;
+    elements.saveExclusions.disabled = false;
+  }
 });
 
 elements.activityButton.addEventListener("click", async () => {

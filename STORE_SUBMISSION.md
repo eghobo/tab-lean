@@ -20,7 +20,9 @@ TabLean helps Chrome use less memory when you keep many tabs organized in groups
 
 Collapse a tab group and TabLean watches the tabs inside it. Idle tabs can be unloaded through Chrome's built in discard feature while the tabs and group remain visible. Select an unloaded tab whenever you need it and Chrome reloads the page normally.
 
-You can adjust the sensitivity to control how readily idle tabs are unloaded. Active and audible tabs are protected. Expanded groups are left alone.
+The sensitivity slider sets an idle timeout from 30 seconds to 5 minutes, with a 30-second grace period after collapse. Active, audible, loading, incognito, and explicitly non-discardable tabs are protected. Expanded groups are left alone. You can exclude hostnames and their subdomains in the popup to keep important sites loaded.
+
+TabLean cannot reliably detect unsaved work or all background activity from Chrome's tab metadata. Add editors and meeting sites that must remain loaded to the exclusion list.
 
 The Activity page shows which tabs TabLean successfully unloaded. It reports real actions confirmed by Chrome and does not invent a memory saving estimate.
 
@@ -34,7 +36,7 @@ TabLean reduces Chrome memory use by automatically unloading eligible idle tabs 
 
 ### tabs
 
-This permission lets TabLean check whether tabs are active, audible, loading, recently used, or already discarded. It also lets TabLean ask Chrome to discard eligible tabs and show their titles in the local Activity history.
+This permission lets TabLean read page addresses to match hostname exclusions and show tab titles in the local Activity history. Basic tab-state checks and the discard operation do not themselves require the `tabs` permission.
 
 ### tabGroups
 
@@ -42,11 +44,11 @@ This permission lets TabLean detect groups the user has collapsed and display th
 
 ### storage
 
-This permission stores the sensitivity, enabled state, successful discard counts, and the 200 most recent Activity events on the user's device.
+This permission stores sensitivity, enabled state, excluded hostnames, successful discard counts, and the 200 most recent Activity events locally. Temporary group-collapse timestamps use session storage to preserve the grace period across service worker restarts. Activation counts are not collected.
 
 ### alarms
 
-This permission schedules lightweight follow up checks for collapsed groups without keeping a background page running.
+This permission schedules one follow-up alarm for eligible tabs in collapsed groups, including retries after temporary failures, without keeping a background page running.
 
 ## Remote code
 

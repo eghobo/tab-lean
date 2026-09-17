@@ -1,462 +1,355 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import vm from "node:vm";
+import { NOW, backgroundSource, collapsedGroup, createHarness, idleTab, pauseCall } from "./chrome-harness.mjs";
 
-const backgroundSource = await readFile(new URL("../background.js", import.meta.url), "utf8");
-
-const TAB_ORDER_MUTATING_API =
-  /chrome\.(?:tabs\.(?:create|duplicate|group|move|remove|ungroup)|tabGroups\.move)\s*\(/;
-
-class ChromeEvent {
-  listeners = [];
-
-  addListener(listener) {
-    this.listeners.push(listener);
-  }
-
-  emit(...arguments_) {
-    for (const listener of this.listeners) listener(...arguments_);
-  }
-
-  async emitAsync(...arguments_) {
-    await Promise.all(this.listeners.map((listener) => listener(...arguments_)));
-  }
+const settings = { extensionEnabled: true, optimizationStrength: 80 };
+function managed(overrides = {}) {
+  return createHarness({ groups: [collapsedGroup], tabs: [idleTab()], stored: { settings },
+    session: { collapsedSince: [[7, NOW - 60_000]] }, ...overrides });
 }
+async function review(harness) { await harness.fire("tabGroupUpdated", collapsedGroup); }
 
-function createHarness({ groups = [], tabs = [], stored = {} } = {}) {
-  const state = {
-    alarms: new Map(),
-    discardCalls: [],
-    groups: new Map(groups.map((group) => [group.id, { ...group }])),
-    sessionStorage: {},
-    storage: structuredClone(stored),
-    tabs: new Map(tabs.map((tab) => [tab.id, { ...tab }])),
-  };
+test("installation uses the default sensitivity and preserves an explicit zero", async () => {
+  const fresh = createHarness();
+  await fresh.fire("installed", { reason: "install" });
+  assert.equal((await fresh.message({ type: "getState" })).settings.optimizationStrength, 80);
+  const zero = createHarness({ stored: { settings: { ...settings, optimizationStrength: 0 } } });
+  await zero.fire("installed", { reason: "update" });
+  assert.equal((await zero.message({ type: "getState" })).settings.optimizationStrength, 0);
+});
 
-  const events = {
-    alarm: new ChromeEvent(),
-    installed: new ChromeEvent(),
-    message: new ChromeEvent(),
-    startup: new ChromeEvent(),
-    tabActivated: new ChromeEvent(),
-    tabCreated: new ChromeEvent(),
-    tabGroupCreated: new ChromeEvent(),
-    tabGroupRemoved: new ChromeEvent(),
-    tabGroupUpdated: new ChromeEvent(),
-    tabRemoved: new ChromeEvent(),
-    tabUpdated: new ChromeEvent(),
-  };
-
-  const chrome = {
-    alarms: {
-      clear: async (name) => state.alarms.delete(name),
-      create: async (name, alarm) =>
-        state.alarms.set(name, { ...alarm, scheduledTime: alarm.when }),
-      getAll: async () =>
-        [...state.alarms.entries()].map(([name, alarm]) => ({ name, ...alarm })),
-      onAlarm: events.alarm,
-    },
-    runtime: {
-      onInstalled: events.installed,
-      onMessage: events.message,
-      onStartup: events.startup,
-    },
-    storage: {
-      local: {
-        get: async (keys) => {
-          if (typeof keys === "string") {
-            return { [keys]: structuredClone(state.storage[keys]) };
-          }
-          if (Array.isArray(keys)) {
-            return Object.fromEntries(
-              keys.map((key) => [key, structuredClone(state.storage[key])]),
-            );
-          }
-          return structuredClone(state.storage);
-        },
-        set: async (values) => Object.assign(state.storage, structuredClone(values)),
-      },
-      session: {
-        get: async (keys) => {
-          if (typeof keys === "string") {
-            return { [keys]: structuredClone(state.sessionStorage[keys]) };
-          }
-          if (Array.isArray(keys)) {
-            return Object.fromEntries(
-              keys.map((key) => [key, structuredClone(state.sessionStorage[key])]),
-            );
-          }
-          return structuredClone(state.sessionStorage);
-        },
-        set: async (values) =>
-          Object.assign(state.sessionStorage, structuredClone(values)),
-      },
-    },
-    tabGroups: {
-      get: async (id) => {
-        if (!state.groups.has(id)) throw new Error("No group");
-        return structuredClone(state.groups.get(id));
-      },
-      onCreated: events.tabGroupCreated,
-      onRemoved: events.tabGroupRemoved,
-      onUpdated: events.tabGroupUpdated,
-      query: async (query = {}) =>
-        [...state.groups.values()]
-          .filter(
-            (group) => query.collapsed === undefined || group.collapsed === query.collapsed,
-          )
-          .map((group) => structuredClone(group)),
-    },
-    tabs: {
-      discard: async (id) => {
-        if (!state.tabs.has(id)) throw new Error("No tab");
-        state.tabs.get(id).discarded = true;
-        state.discardCalls.push(id);
-        return structuredClone(state.tabs.get(id));
-      },
-      get: async (id) => {
-        if (!state.tabs.has(id)) throw new Error("No tab");
-        return structuredClone(state.tabs.get(id));
-      },
-      onActivated: events.tabActivated,
-      onCreated: events.tabCreated,
-      onRemoved: events.tabRemoved,
-      onUpdated: events.tabUpdated,
-      query: async ({ groupId } = {}) =>
-        [...state.tabs.values()]
-          .filter((tab) => groupId === undefined || tab.groupId === groupId)
-          .map((tab) => structuredClone(tab)),
-    },
-  };
-
-  vm.runInContext(backgroundSource, vm.createContext({ chrome, console }));
-
-  async function message(payload) {
-    const listener = events.message.listeners[0];
-    return new Promise((resolve, reject) => {
-      const keptOpen = listener(payload, {}, (response) => {
-        if (response.ok) resolve(response.data);
-        else reject(new Error(response.error));
-      });
-      assert.equal(keptOpen, true);
-    });
-  }
-
-  return { events, message, state };
-}
-
-const collapsedGroup = {
-  collapsed: true,
-  color: "blue",
-  id: 7,
-  title: "Research",
-  windowId: 1,
-};
-
-function idleTab(overrides = {}) {
-  return {
-    active: false,
-    audible: false,
-    discarded: false,
-    groupId: 7,
-    id: 1,
-    index: 0,
-    lastAccessed: Date.now() - 3_600_000,
-    status: "complete",
-    title: "Reference",
-    url: "https://example.com/reference",
-    ...overrides,
-  };
-}
-
-test("installation automatically discards idle tabs in collapsed groups", async () => {
-  const harness = createHarness({ groups: [collapsedGroup], tabs: [idleTab()] });
-
-  await harness.events.installed.emitAsync();
-
-  assert.equal(harness.state.tabs.get(1).discarded, true);
-  assert.deepEqual(harness.state.discardCalls, [1]);
-  assert.equal(harness.state.tabs.size, 1);
-  assert.equal(harness.state.groups.size, 1);
-  assert.equal(harness.state.storage.activityStats.totalDiscardActions, 1);
-  assert.deepEqual(harness.state.storage.activityLog[0].tabTitles, ["Reference"]);
+test("collapsing an old group waits for grace then unloads without changing placement", async () => {
+  const h = managed({ groups: [{ ...collapsedGroup, collapsed: false }], session: {},
+    tabs: [idleTab({ index: 4 }), idleTab({ id: 2, index: 5 })] });
+  await h.flush();
+  h.state.groups.get(7).collapsed = true;
+  await review(h);
+  assert.deepEqual(h.state.discardCalls, []);
+  await h.advance(29_999);
+  assert.deepEqual(h.state.discardCalls, []);
+  await h.advance(1);
+  assert.deepEqual(h.state.discardCalls, [1, 2]);
+  assert.deepEqual([...h.state.tabs.values()].map(({ id, index, groupId }) => ({ id, index, groupId })),
+    [{ id: 1, index: 4, groupId: 7 }, { id: 2, index: 5, groupId: 7 }]);
+  assert.equal(h.state.groups.size, 1);
+  assert.equal(h.state.alarms.size, 0);
 });
 
 test("expanded groups are never optimized", async () => {
-  const expandedGroup = { ...collapsedGroup, collapsed: false };
-  const harness = createHarness({ groups: [expandedGroup], tabs: [idleTab()] });
-
-  await harness.events.installed.emitAsync();
-
-  assert.equal(harness.state.tabs.get(1).discarded, false);
-  assert.equal(harness.state.discardCalls.length, 0);
+  const h = managed({ groups: [{ ...collapsedGroup, collapsed: false }] });
+  await review(h);
+  assert.deepEqual(h.state.discardCalls, []);
 });
 
-test("collapsing a group automatically starts background optimization", async () => {
-  const expandedGroup = { ...collapsedGroup, collapsed: false };
-  const harness = createHarness({ groups: [expandedGroup], tabs: [idleTab()] });
-  await harness.events.installed.emitAsync();
-
-  harness.state.groups.get(7).collapsed = true;
-  await harness.events.tabGroupUpdated.emitAsync({ ...collapsedGroup });
-
-  assert.equal(harness.state.tabs.get(1).discarded, true);
+test("active, audible, loading, opted-out, private, and discarded tabs are protected", async () => {
+  const h = managed({ tabs: [idleTab({ active: true }), idleTab({ id: 2, audible: true }),
+    idleTab({ id: 3, status: "loading" }), idleTab({ id: 4, autoDiscardable: false }),
+    idleTab({ id: 5, incognito: true, title: "Private draft" }), idleTab({ id: 6, discarded: true })] });
+  await review(h);
+  assert.deepEqual(h.state.discardCalls, []);
+  assert.equal(JSON.stringify(h.state.storage).includes("Private draft"), false);
+  assert.equal(JSON.stringify(h.state.logs).includes("Private draft"), false);
 });
 
-test("active and audible tabs are never discarded", async () => {
-  const tabs = [
-    idleTab({ active: true, id: 1 }),
-    idleTab({ audible: true, id: 2 }),
-  ];
-  const harness = createHarness({ groups: [collapsedGroup], tabs });
-
-  await harness.events.installed.emitAsync();
-
-  assert.equal(harness.state.discardCalls.length, 0);
-  assert.equal(harness.state.tabs.get(1).discarded, false);
-  assert.equal(harness.state.tabs.get(2).discarded, false);
+test("an audible-only group stays quiescent and resumes when audio stops", async () => {
+  const h = managed({ tabs: [idleTab({ audible: true })] });
+  await review(h);
+  assert.equal(h.state.alarms.size, 0);
+  h.state.tabs.get(1).audible = false;
+  await h.fire("tabUpdated", 1, { audible: false }, h.state.tabs.get(1));
+  assert.deepEqual(h.state.discardCalls, [1]);
 });
 
-test("optimization preserves tab order and group membership", async () => {
-  const tabs = [
-    idleTab({ id: 11, index: 4, title: "First" }),
-    idleTab({ id: 12, index: 5, title: "Second" }),
-    idleTab({ id: 13, index: 6, title: "Third" }),
-  ];
-  const harness = createHarness({ groups: [collapsedGroup], tabs });
-  const placementBefore = tabs.map(({ id, index, groupId }) => ({ id, index, groupId }));
-
-  await harness.events.installed.emitAsync();
-
-  const placementAfter = [...harness.state.tabs.values()].map(
-    ({ id, index, groupId }) => ({ id, index, groupId }),
-  );
-  assert.deepEqual(placementAfter, placementBefore);
-  assert.deepEqual(harness.state.discardCalls, [11, 12, 13]);
+test("loading completion and discard opt-in trigger eligibility checks", async () => {
+  const h = managed({ tabs: [idleTab({ status: "loading" }), idleTab({ id: 2, autoDiscardable: false })] });
+  await review(h);
+  h.state.tabs.get(1).status = "complete";
+  await h.fire("tabUpdated", 1, { status: "complete" }, h.state.tabs.get(1));
+  assert.deepEqual(h.state.discardCalls, [1]);
+  h.state.tabs.get(2).autoDiscardable = true;
+  await h.fire("tabUpdated", 2, { autoDiscardable: true }, h.state.tabs.get(2));
+  assert.deepEqual(h.state.discardCalls, [1, 2]);
 });
 
-test("background does not use APIs that can reorder or rebuild grouped tabs", () => {
-  assert.doesNotMatch(backgroundSource, TAB_ORDER_MUTATING_API);
+test("maximum sensitivity still gives a newly used tab 30 seconds idle", async () => {
+  const h = managed({ stored: { settings: { ...settings, optimizationStrength: 100 } },
+    tabs: [idleTab({ lastAccessed: NOW })] });
+  await review(h);
+  assert.deepEqual(h.state.discardCalls, []);
+  await h.advance(30_000);
+  assert.deepEqual(h.state.discardCalls, [1]);
 });
 
-test("sensitivity controls whether a recent background tab is discarded", async () => {
-  const recentTab = () => idleTab({ lastAccessed: Date.now() });
-  const gentle = createHarness({ groups: [collapsedGroup], tabs: [recentTab()] });
-  const maximum = createHarness({ groups: [collapsedGroup], tabs: [recentTab()] });
-
-  await gentle.message({
-    type: "updateSettings",
-    settings: { extensionEnabled: true, optimizationStrength: 0 },
-  });
-  await maximum.message({
-    type: "updateSettings",
-    settings: { extensionEnabled: true, optimizationStrength: 100 },
-  });
-
-  assert.equal(gentle.state.tabs.get(1).discarded, false);
-  assert.equal(maximum.state.tabs.get(1).discarded, true);
+test("gentle sensitivity eventually unloads frequently used tabs", async () => {
+  const h = managed({ stored: { settings: { ...settings, optimizationStrength: 0 } },
+    tabs: [idleTab({ lastAccessed: NOW })], session: { collapsedSince: [[7, NOW - 60_000]],
+      tabUsageData: [[1, { activationCount: 50, lastActivatedAt: NOW }]] } });
+  await review(h);
+  await h.advance(299_999);
+  assert.deepEqual(h.state.discardCalls, []);
+  await h.advance(1);
+  assert.deepEqual(h.state.discardCalls, [1]);
+  assert.equal(h.state.sessionStorage.tabUsageData, undefined);
 });
 
-test("disabling stops background optimization and clears review alarms", async () => {
-  const harness = createHarness({ groups: [collapsedGroup], tabs: [idleTab()] });
-
-  const state = await harness.message({
-    type: "updateSettings",
-    settings: { extensionEnabled: false, optimizationStrength: 100 },
-  });
-
-  assert.equal(state.settings.extensionEnabled, false);
-  assert.equal(harness.state.tabs.get(1).discarded, false);
-  assert.equal(harness.state.alarms.size, 0);
+test("default sensitivity applies an 84 second idle timeout", async () => {
+  const h = managed({ tabs: [idleTab({ lastAccessed: NOW })] });
+  await review(h);
+  await h.advance(83_999);
+  assert.deepEqual(h.state.discardCalls, []);
+  await h.advance(1);
+  assert.deepEqual(h.state.discardCalls, [1]);
 });
 
-test("audible-only group does not reschedule alarms indefinitely", async () => {
-  const tabs = [idleTab({ audible: true, id: 1 })];
-  const harness = createHarness({ groups: [collapsedGroup], tabs });
-
-  await harness.events.installed.emitAsync();
-
-  assert.equal(harness.state.discardCalls.length, 0);
-  assert.equal(harness.state.alarms.size, 0);
+test("several collapsed groups share one alarm", async () => {
+  const h = managed({ groups: [collapsedGroup, { ...collapsedGroup, id: 8 }],
+    tabs: [idleTab({ lastAccessed: NOW }), idleTab({ id: 2, groupId: 8, lastAccessed: NOW })] });
+  await review(h);
+  assert.equal(h.state.alarms.size, 1);
+  await h.advance(84_000);
+  assert.deepEqual(h.state.discardCalls, [1, 2]);
 });
 
-test("expanding a group clears its review alarm", async () => {
-  const tabs = [idleTab({ id: 1 }), idleTab({ id: 2, audible: true })];
-  const harness = createHarness({ groups: [collapsedGroup], tabs });
-  await harness.events.installed.emitAsync();
-
-  assert.equal(harness.state.tabs.get(1).discarded, true);
-
-  harness.state.groups.get(7).collapsed = false;
-  await harness.events.tabGroupUpdated.emitAsync({ ...collapsedGroup, collapsed: false });
-
-  assert.equal(harness.state.alarms.size, 0);
+test("a worker wake restores an alarm without resetting activity history", async () => {
+  const h = managed({ tabs: [idleTab({ lastAccessed: NOW })],
+    stored: { settings, activityStats: { totalDiscardActions: 9, managedTabIds: [42] },
+      activityLog: [{ timestamp: NOW - 1, message: "Existing history" }] } });
+  await h.flush();
+  assert.equal(h.state.alarms.size, 1);
+  h.state.alarms.clear();
+  const wake = h.restart();
+  await wake.flush();
+  assert.equal(wake.state.alarms.size, 1);
+  assert.equal(wake.state.storage.activityStats.totalDiscardActions, 9);
+  assert.deepEqual(wake.state.storage.activityStats.managedTabIds, [42]);
+  assert.equal(wake.state.storage.activityLog[0].message, "Existing history");
 });
 
-test("alarm fires and triggers optimization for the group", async () => {
-  const tabs = [idleTab({ id: 1, audible: true }), idleTab({ id: 2 })];
-  const harness = createHarness({ groups: [collapsedGroup], tabs });
-  await harness.events.installed.emitAsync();
-
-  assert.equal(harness.state.tabs.get(2).discarded, true);
-  harness.state.tabs.get(2).discarded = false;
-  harness.state.discardCalls.length = 0;
-
-  harness.events.alarm.emit({ name: "review-group:7" });
-  await new Promise((r) => setTimeout(r, 50));
-
-  assert.equal(harness.state.tabs.get(2).discarded, true);
-  assert.deepEqual(harness.state.discardCalls, [2]);
+test("collapse grace survives worker restart", async () => {
+  const h = managed({ session: {} });
+  await review(h);
+  await h.advance(20_000);
+  const wake = h.restart();
+  await wake.flush();
+  assert.deepEqual(wake.state.discardCalls, []);
+  await wake.advance(10_000);
+  assert.deepEqual(wake.state.discardCalls, [1]);
 });
 
-test("removing a group clears its review alarm", async () => {
-  const tabs = [idleTab({ id: 1, audible: true }), idleTab({ id: 2 })];
-  const harness = createHarness({ groups: [collapsedGroup], tabs });
-  await harness.events.installed.emitAsync();
-
-  await harness.events.tabGroupRemoved.emitAsync(collapsedGroup);
-
-  assert.equal(harness.state.alarms.size, 0);
-});
-
-test("tab activation counts persist and reload on alarm wake (simulated SW restart)", async () => {
-  const recentTab = idleTab({ id: 1, lastAccessed: Date.now() - 45_000 });
-  const harness1 = createHarness({ groups: [collapsedGroup], tabs: [recentTab] });
-  await harness1.events.installed.emitAsync();
-
-  for (let i = 0; i < 7; i++) {
-    harness1.events.tabActivated.emit({ tabId: 1 });
-    await new Promise((r) => setTimeout(r, 10));
+test("expanding or removing the last managed group clears its pending alarm", async () => {
+  for (const remove of [false, true]) {
+    const h = managed({ tabs: [idleTab({ lastAccessed: NOW })] });
+    await review(h);
+    assert.equal(h.state.alarms.size, 1);
+    if (remove) h.state.groups.delete(7);
+    else h.state.groups.get(7).collapsed = false;
+    await h.fire(remove ? "tabGroupRemoved" : "tabGroupUpdated", { ...collapsedGroup, collapsed: false });
+    assert.equal(h.state.alarms.size, 0);
+    assert.deepEqual(h.state.sessionStorage.collapsedSince, []);
   }
-  await new Promise((r) => setTimeout(r, 50));
-
-  assert.ok(harness1.state.sessionStorage.tabUsageData);
-  const saved = harness1.state.sessionStorage.tabUsageData;
-  const entry = saved.find(([id]) => id === 1);
-  assert.equal(entry[1].activationCount, 7);
-
-  const harness2 = createHarness({
-    groups: [collapsedGroup],
-    tabs: [{ ...recentTab, discarded: false }],
-  });
-  harness2.state.sessionStorage = harness1.state.sessionStorage;
-
-  harness2.events.alarm.emit({ name: "review-group:7" });
-  await new Promise((r) => setTimeout(r, 50));
-
-  assert.equal(
-    harness2.state.tabs.get(1).discarded,
-    false,
-    "tab with 7 activations should be kept by repeat-use scoring after SW restart",
-  );
 });
 
-test("tab removal on cold wake does not wipe persisted activation history", async () => {
-  const harness1 = createHarness({
-    groups: [collapsedGroup],
-    tabs: [idleTab({ id: 1 }), idleTab({ id: 2 })],
-  });
-  await harness1.events.installed.emitAsync();
-
-  for (let i = 0; i < 5; i++) {
-    harness1.events.tabActivated.emit({ tabId: 2 });
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  await new Promise((r) => setTimeout(r, 50));
-
-  const saved = harness1.state.sessionStorage.tabUsageData;
-  const tab2 = saved.find(([id]) => id === 2);
-  assert.equal(tab2[1].activationCount, 5);
-
-  const harness2 = createHarness({
-    groups: [collapsedGroup],
-    tabs: [idleTab({ id: 1 }), idleTab({ id: 2 }), idleTab({ id: 3 })],
-  });
-  harness2.state.sessionStorage = harness1.state.sessionStorage;
-
-  harness2.events.tabRemoved.emit(3);
-  await new Promise((r) => setTimeout(r, 50));
-
-  const afterRemove = harness2.state.sessionStorage.tabUsageData;
-  const tab2After = afterRemove.find(([id]) => id === 2);
-  assert.ok(tab2After, "tab 2 activation data must survive removal of unrelated tab 3");
-  assert.equal(tab2After[1].activationCount, 5);
+test("disabling clears existing review alarms", async () => {
+  const h = managed({ tabs: [idleTab({ lastAccessed: NOW })] });
+  await review(h);
+  assert.equal(h.state.alarms.size, 1);
+  await h.message({ type: "updateSettings", settings: { extensionEnabled: false } });
+  await h.flush();
+  assert.equal(h.state.alarms.size, 0);
+  await h.advance(300_000);
+  assert.deepEqual(h.state.discardCalls, []);
 });
 
-test("switching away from active tab in collapsed group triggers optimization", async () => {
-  const activeTab = idleTab({ id: 1, active: true });
-  const otherTab = idleTab({ id: 2, groupId: -1 });
-  const harness = createHarness({
-    groups: [collapsedGroup],
-    tabs: [activeTab, otherTab],
-  });
-  await harness.events.installed.emitAsync();
-
-  assert.equal(harness.state.tabs.get(1).discarded, false);
-  assert.equal(harness.state.alarms.size, 0, "no alarm since only tab was active");
-
-  harness.events.tabActivated.emit({ tabId: 1 });
-  await new Promise((r) => setTimeout(r, 10));
-
-  harness.state.tabs.get(1).active = false;
-  harness.events.tabActivated.emit({ tabId: 2 });
-  await new Promise((r) => setTimeout(r, 50));
-
-  assert.ok(
-    harness.state.tabs.get(1).discarded || harness.state.alarms.size > 0,
-    "switching away must either discard the tab or schedule a review alarm",
-  );
+test("groups collapsed while paused receive fresh grace after restart and enabling", async () => {
+  const h = managed({ stored: { settings: { ...settings, extensionEnabled: false } } });
+  await h.flush();
+  h.state.groups.get(7).collapsed = false;
+  await h.fire("tabGroupUpdated", { ...collapsedGroup, collapsed: false });
+  const wake = h.restart();
+  await wake.flush();
+  wake.state.groups.get(7).collapsed = true;
+  await review(wake);
+  await wake.message({ type: "updateSettings", settings: { extensionEnabled: true } });
+  await wake.flush();
+  assert.deepEqual(wake.state.discardCalls, []);
+  await wake.advance(30_000);
+  assert.deepEqual(wake.state.discardCalls, [1]);
 });
 
-test("disabling clears alarms that were previously scheduled", async () => {
-  const tabs = [idleTab({ id: 1, audible: true }), idleTab({ id: 2 })];
-  const harness = createHarness({ groups: [collapsedGroup], tabs });
-  await harness.events.installed.emitAsync();
-
-  assert.ok(harness.state.alarms.size > 0 || harness.state.tabs.get(2).discarded);
-
-  await harness.message({
-    type: "updateSettings",
-    settings: { extensionEnabled: false, optimizationStrength: 80 },
-  });
-
-  assert.equal(harness.state.alarms.size, 0);
+test("disabling during a pending query cancels later discards", { timeout: 2000 }, async () => {
+  const h = managed();
+  const gate = pauseCall(h.chrome.tabs, "query");
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await gate.started;
+  await h.message({ type: "updateSettings", settings: { extensionEnabled: false } });
+  gate.release();
+  await h.flush();
+  assert.deepEqual(h.state.discardCalls, []);
+  assert.equal(h.state.alarms.size, 0);
 });
 
-test("audio stop on a tab re-triggers optimization for its collapsed group", async () => {
-  const tabs = [idleTab({ id: 1, audible: true })];
-  const harness = createHarness({ groups: [collapsedGroup], tabs });
-  await harness.events.installed.emitAsync();
-
-  assert.equal(harness.state.tabs.get(1).discarded, false);
-  assert.equal(harness.state.alarms.size, 0);
-
-  harness.state.tabs.get(1).audible = false;
-  harness.events.tabUpdated.emit(1, { audible: false }, harness.state.tabs.get(1));
-  await new Promise((r) => setTimeout(r, 50));
-
-  assert.equal(harness.state.tabs.get(1).discarded, true);
+test("expanding during a pending query cancels later discards", { timeout: 2000 }, async () => {
+  const h = managed();
+  const gate = pauseCall(h.chrome.tabs, "query");
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await gate.started;
+  h.state.groups.get(7).collapsed = false;
+  h.events.tabGroupUpdated.emit({ ...collapsedGroup, collapsed: false });
+  gate.release();
+  await h.flush();
+  assert.deepEqual(h.state.discardCalls, []);
 });
 
-test("unknown message type returns an error", async () => {
-  const harness = createHarness();
-  await assert.rejects(() => harness.message({ type: "bogus" }), /Unknown request/);
+test("a tab moved out of its group is rechecked before discard", { timeout: 2000 }, async () => {
+  const h = managed();
+  const gate = pauseCall(h.chrome.tabs, "query");
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await gate.started;
+  h.state.tabs.get(1).groupId = -1;
+  // Protect the tab even before its event reaches the worker.
+  gate.release();
+  await h.flush();
+  assert.deepEqual(h.state.discardCalls, []);
 });
 
-test("activity state reports exact discard counts and can be cleared", async () => {
-  const harness = createHarness({ groups: [collapsedGroup], tabs: [idleTab()] });
-  await harness.events.installed.emitAsync();
+test("audio stopping during the final query is not lost by coalescing", { timeout: 2000 }, async () => {
+  const h = managed({ tabs: [idleTab({ audible: true })] });
+  const gate = pauseCall(h.chrome.tabs, "query", 2);
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await gate.started;
+  h.state.tabs.get(1).audible = false;
+  h.events.tabUpdated.emit(1, { audible: false }, h.state.tabs.get(1));
+  await h.flush();
+  gate.release();
+  await h.flush();
+  assert.deepEqual(h.state.discardCalls, [1]);
+});
 
-  const activity = await harness.message({ type: "getActivityState" });
-  assert.equal(activity.metrics.collapsedGroupCount, 1);
-  assert.equal(activity.metrics.collapsedTabCount, 1);
-  assert.equal(activity.metrics.discardedTabCount, 1);
-  assert.equal(activity.metrics.totalDiscardActions, 1);
-  assert.equal(activity.activityLog[0].groupTitle, "Research");
+test("switching active tabs after restart revisits all collapsed groups", async () => {
+  const h = managed({ tabs: [idleTab({ active: true }), idleTab({ id: 2, groupId: -1 })] });
+  await review(h);
+  assert.equal(h.state.alarms.size, 0);
+  const wake = h.restart();
+  wake.state.tabs.get(1).active = false;
+  wake.state.tabs.get(2).active = true;
+  await wake.fire("tabActivated", { tabId: 2, windowId: 1 });
+  assert.deepEqual(wake.state.discardCalls, [1]);
+});
 
-  const cleared = await harness.message({ type: "clearActivity" });
-  assert.equal(cleared.metrics.totalDiscardActions, 0);
-  assert.equal(cleared.activityLog.length, 0);
-  assert.equal(cleared.metrics.discardedTabCount, 0);
+test("interleaved activations across windows do not strand a group", async () => {
+  const h = managed({ tabs: [idleTab({ active: true }), idleTab({ id: 2, groupId: -1 }),
+    idleTab({ id: 3, groupId: -1, windowId: 2, active: true })] });
+  await h.fire("tabActivated", { tabId: 1, windowId: 1 });
+  await h.fire("tabActivated", { tabId: 3, windowId: 2 });
+  h.state.tabs.get(1).active = false;
+  h.state.tabs.get(2).active = true;
+  await h.fire("tabActivated", { tabId: 2, windowId: 1 });
+  assert.deepEqual(h.state.discardCalls, [1]);
+});
+
+test("closed tabs leave neither obsolete usage nor tracking on cold wake", async () => {
+  const h = managed({ tabs: [], session: { tabUsageData: [[1, { activationCount: 5 }]] },
+    stored: { settings, activityStats: { totalDiscardActions: 4, managedTabIds: [1] } } });
+  await h.fire("tabRemoved", 1);
+  assert.equal(h.state.sessionStorage.tabUsageData, undefined);
+  assert.deepEqual(h.state.storage.activityStats.managedTabIds, []);
+  assert.equal(h.state.storage.activityStats.totalDiscardActions, 4);
+});
+
+test("concurrent review requests record one discard action", async () => {
+  const h = managed();
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await h.flush();
+  assert.deepEqual(h.state.discardCalls, [1]);
+  const result = await h.message({ type: "getActivityState" });
+  assert.equal(result.metrics.totalDiscardActions, 1);
+  assert.equal(result.metrics.discardedTabCount, 1);
+});
+
+test("native discard failure retains a retry and counts only successes", async () => {
+  const h = managed();
+  const discard = h.chrome.tabs.discard;
+  h.chrome.tabs.discard = async () => { throw new Error("Temporary discard failure"); };
+  await review(h);
+  assert.equal((await h.message({ type: "getActivityState" })).metrics.totalDiscardActions, 0);
+  assert.equal(h.state.alarms.size, 1);
+  h.chrome.tabs.discard = discard;
+  await h.advance(30_000);
+  assert.deepEqual(h.state.discardCalls, [1]);
+});
+
+test("a query failure retains an alarm that recovers automatically", async () => {
+  const h = managed();
+  const query = h.chrome.tabs.query;
+  h.chrome.tabs.query = async () => { throw new Error("Temporary query failure"); };
+  await review(h);
+  assert.equal(h.state.alarms.size, 1);
+  h.chrome.tabs.query = query;
+  await h.advance(30_000);
+  assert.deepEqual(h.state.discardCalls, [1]);
+});
+
+test("a failed collapse-state write is persisted on retry before worker restart", async () => {
+  const h = managed({ tabs: [idleTab({ audible: true })] });
+  await h.flush();
+  const set = h.chrome.storage.session.set;
+  let failed = false;
+  h.chrome.storage.session.set = async values => {
+    if (!failed) { failed = true; throw new Error("Temporary session write failure"); }
+    return set(values);
+  };
+  h.state.groups.get(7).collapsed = false;
+  await h.fire("tabGroupUpdated", { ...collapsedGroup, collapsed: false });
+  await h.advance(30_000);
+  assert.deepEqual(h.state.sessionStorage.collapsedSince, []);
+  h.state.groups.get(7).collapsed = true;
+  h.state.tabs.get(1).audible = false;
+  const wake = h.restart();
+  await review(wake);
+  assert.deepEqual(wake.state.discardCalls, []);
+  await wake.advance(30_000);
+  assert.deepEqual(wake.state.discardCalls, [1]);
+});
+
+test("settings patches preserve concurrent changes", async () => {
+  const h = createHarness({ stored: { settings } });
+  await Promise.all([h.message({ type: "updateSettings", settings: { extensionEnabled: false } }),
+    h.message({ type: "updateSettings", settings: { optimizationStrength: 20 } })]);
+  const result = await h.message({ type: "getState" });
+  assert.equal(result.settings.extensionEnabled, false);
+  assert.equal(result.settings.optimizationStrength, 20);
+});
+
+test("exclusions match hosts and subdomains but not unrelated suffixes", async () => {
+  const h = managed({ stored: { settings: { ...settings, excludedHosts: ["example.com"] } },
+    tabs: [idleTab(), idleTab({ id: 2, url: "https://docs.example.com/edit" }),
+      idleTab({ id: 3, url: "https://notexample.com/" })] });
+  await review(h);
+  assert.deepEqual(h.state.discardCalls, [3]);
+});
+
+test("invalid exclusion input preserves previous settings", async () => {
+  const h = createHarness({ stored: { settings } });
+  await assert.rejects(h.message({ type: "updateSettings", settings: { excludedHosts: ["https://example.com/private"] } }), /hostname/i);
+  assert.equal((await h.message({ type: "getState" })).settings.optimizationStrength, 80);
+});
+
+test("clearing activity resets history and counts", async () => {
+  const h = managed();
+  await review(h);
+  const state = await h.message({ type: "clearActivity" });
+  assert.equal(state.metrics.totalDiscardActions, 0);
+  assert.equal(state.metrics.discardedTabCount, 0);
+  assert.deepEqual(state.activityLog, []);
+});
+
+test("unknown messages return an error", async () => {
+  const h = createHarness();
+  await assert.rejects(h.message({ type: "bogus" }), /Unknown request/);
+});
+
+test("background never moves, closes, groups, or recreates tabs", () => {
+  assert.doesNotMatch(backgroundSource,
+    /chrome\.(?:tabs\.(?:create|duplicate|group|move|remove|ungroup)|tabGroups\.move)\s*\(/);
 });
