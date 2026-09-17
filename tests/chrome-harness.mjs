@@ -96,7 +96,8 @@ export function createHarness({ groups = [], tabs = [], stored = {}, session = {
     static now() { return state.now; }
   }
   vm.runInContext(backgroundSource, vm.createContext({ chrome, Date: ClockDate, URL,
-    console: { info: (...args) => state.logs.push(args), error: (...args) => state.errors.push(args) } }));
+    console: { info: (...args) => state.logs.push(args), warn: (...args) => state.logs.push(args),
+      error: (...args) => state.errors.push(args) } }));
 
   async function flush() {
     // Drain actual promise work without sleeping or advancing the policy clock.
@@ -135,13 +136,21 @@ export function createHarness({ groups = [], tabs = [], stored = {}, session = {
 
 export function pauseCall(object, method, callNumber = 1) {
   const original = object[method];
-  let entered, release, calls = 0;
-  const started = new Promise(resolve => { entered = resolve; });
+  let entered, rejectStarted, release, calls = 0, reached = false, restored = false;
+  const started = new Promise((resolve, reject) => { entered = resolve; rejectStarted = reject; });
+  started.catch(() => {});
   const gate = new Promise(resolve => { release = resolve; });
   object[method] = async (...args) => {
     const result = await original(...args);
-    if (++calls === callNumber) { entered(); await gate; }
+    if (++calls === callNumber) { reached = true; entered(); await gate; }
     return result;
   };
-  return { started, release };
+  function restore() {
+    if (restored) return;
+    restored = true;
+    object[method] = original;
+    release();
+    if (!reached) rejectStarted(new Error(`pauseCall: ${method} was never reached before restore`));
+  }
+  return { started, release, restore };
 }

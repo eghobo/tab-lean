@@ -279,6 +279,19 @@ test("native discard failure retains a retry and counts only successes", async (
   assert.deepEqual(h.state.discardCalls, [1]);
 });
 
+test("discard success is determined by tab presence, not the discarded flag", async () => {
+  const h = managed();
+  const original = h.chrome.tabs.discard;
+  h.chrome.tabs.discard = async id => {
+    const result = await original(id);
+    return { ...result, discarded: false };
+  };
+  await review(h);
+  assert.deepEqual(h.state.discardCalls, [1]);
+  const activity = await h.message({ type: "getActivityState" });
+  assert.equal(activity.metrics.totalDiscardActions, 1);
+});
+
 test("a query failure retains an alarm that recovers automatically", async () => {
   const h = managed();
   const query = h.chrome.tabs.query;
@@ -329,6 +342,46 @@ test("exclusions match hosts and subdomains but not unrelated suffixes", async (
   assert.deepEqual(h.state.discardCalls, [3]);
 });
 
+test("corrupt stored excludedHosts self-heals instead of bricking the extension", async () => {
+  const h = managed({ stored: { settings: { ...settings, excludedHosts: "example.com" } } });
+  await h.flush();
+  // getState must resolve (not reject with "Enter one hostname per line").
+  const state = await h.message({ type: "getState" });
+  assert.deepEqual(state.settings.excludedHosts, []);
+  // The sweep must run without arming a 30s retry loop.
+  assert.deepEqual(h.state.discardCalls, [1]);
+  assert.equal(h.state.errors.filter(e => String(e).includes("Review failed")).length, 0);
+});
+
+test("null stored settings self-heals instead of bricking the extension", async () => {
+  const h = managed({ stored: { settings: null } });
+  await h.flush();
+  const state = await h.message({ type: "getState" });
+  assert.equal(state.settings.extensionEnabled, true);
+  assert.deepEqual(h.state.discardCalls, [1]);
+});
+
+test("one invalid exclusion entry preserves the valid ones in lenient mode", async () => {
+  const h = managed({ stored: { settings: { ...settings, excludedHosts: ["example.com", 42] } },
+    tabs: [idleTab(), idleTab({ id: 2, url: "https://notexample.com/" })] });
+  await h.flush();
+  const state = await h.message({ type: "getState" });
+  assert.deepEqual(state.settings.excludedHosts, ["example.com"]);
+  assert.deepEqual(h.state.discardCalls, [2]);
+  // A user update with an invalid entry must still reject strictly.
+  await assert.rejects(h.message({ type: "updateSettings", settings: { excludedHosts: [42] } }), /hostname/i);
+});
+
+test("undefined patch keys do not wipe stored settings", async () => {
+  const h = createHarness({ stored: { settings: { ...settings, excludedHosts: ["example.com"], optimizationStrength: 42 } } });
+  await h.message({ type: "updateSettings", settings: { excludedHosts: undefined } });
+  const s1 = await h.message({ type: "getState" });
+  assert.deepEqual(s1.settings.excludedHosts, ["example.com"]);
+  await h.message({ type: "updateSettings", settings: { optimizationStrength: undefined } });
+  const s2 = await h.message({ type: "getState" });
+  assert.equal(s2.settings.optimizationStrength, 42);
+});
+
 test("invalid exclusion input preserves previous settings", async () => {
   const h = createHarness({ stored: { settings } });
   await assert.rejects(h.message({ type: "updateSettings", settings: { excludedHosts: ["https://example.com/private"] } }), /hostname/i);
@@ -347,6 +400,105 @@ test("clearing activity resets history and counts", async () => {
 test("unknown messages return an error", async () => {
   const h = createHarness();
   await assert.rejects(h.message({ type: "bogus" }), /Unknown request/);
+});
+
+test("an ungrouped tab loading does not abort an in-flight sweep", { timeout: 2000 }, async () => {
+  const h = managed({ tabs: [idleTab(), idleTab({ id: 2 }),
+    idleTab({ id: 3, groupId: -1, status: "loading" })] });
+  const gate = pauseCall(h.chrome.tabs, "discard");
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await gate.started;
+  // An ungrouped tab finishing its load must not invalidate the sweep.
+  h.state.tabs.get(3).status = "complete";
+  h.events.tabUpdated.emit(3, { status: "complete" }, h.state.tabs.get(3));
+  await h.flush();
+  gate.release();
+  await h.flush();
+  assert.equal(h.state.storage.activityLog.length, 1);
+  assert.equal(h.state.storage.activityLog[0].discardedCount, 2);
+});
+
+test("removing a tab does not abort an in-flight sweep", { timeout: 2000 }, async () => {
+  const h = managed({ tabs: [idleTab(), idleTab({ id: 2 }), idleTab({ id: 3, groupId: -1 })],
+    stored: { settings, activityStats: { totalDiscardActions: 0, managedTabIds: [3] } } });
+  const gate = pauseCall(h.chrome.tabs, "discard");
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await gate.started;
+  h.state.tabs.delete(3);
+  h.events.tabRemoved.emit(3);
+  await h.flush();
+  gate.release();
+  await h.flush();
+  assert.deepEqual(h.state.discardCalls, [1, 2]);
+  assert.equal(h.state.storage.activityLog.length, 1);
+  // The prune still ran despite using the non-invalidating path.
+  assert.ok(!h.state.storage.activityStats.managedTabIds.includes(3));
+});
+
+test("creating an ungrouped tab does not abort an in-flight sweep", { timeout: 2000 }, async () => {
+  const h = managed({ tabs: [idleTab(), idleTab({ id: 2 })] });
+  const gate = pauseCall(h.chrome.tabs, "discard");
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await gate.started;
+  h.state.tabs.set(3, idleTab({ id: 3, groupId: -1 }));
+  h.events.tabCreated.emit(h.state.tabs.get(3));
+  await h.flush();
+  gate.release();
+  await h.flush();
+  assert.equal(h.state.storage.activityLog.length, 1);
+  assert.equal(h.state.storage.activityLog[0].discardedCount, 2);
+});
+
+test("collapse grace reset survives worker restart via persisted pending resets", async () => {
+  // Simulate: previous worker persisted a pending reset before dying. Session holds
+  // a stale collapse timestamp AND the pending reset marker for that group.
+  const h = managed({ tabs: [idleTab({ audible: true })],
+    session: { collapsedSince: [[7, NOW - 60_000]], pendingResets: [7] } });
+  h.state.tabs.get(1).audible = false;
+  await h.flush();
+  // With fix: ensureReviewState loaded pendingResets into resetGroups.
+  // Reconciliation deleted stale T0, re-added at NOW. Grace = NOW + 30s.
+  // Without fix: pendingResets ignored, stale T0 survived. Grace expired. Discarded.
+  assert.deepEqual(h.state.discardCalls, []);
+  await h.advance(30_000);
+  assert.deepEqual(h.state.discardCalls, [1]);
+});
+
+test("stale pending resets converge to empty after reconciliation", async () => {
+  // Group 99 was expanded in a prior worker; its pending reset persists in session
+  // but 99 is not a current group and has no collapsedSince entry.
+  const h = managed({ session: { collapsedSince: [[7, NOW - 60_000]], pendingResets: [99] } });
+  await h.flush();
+  // Without fix: resetGroups.clear() in reconcile does not mark dirty, so
+  // persistReviewState returns early and pendingResets stays [99] forever.
+  assert.deepEqual(h.state.sessionStorage.pendingResets, []);
+});
+
+test("a disabled extension creates no alarm during review", async () => {
+  const h = managed({ stored: { settings: { ...settings, extensionEnabled: false } } });
+  await h.flush();
+  let alarmCreated = false;
+  const originalCreate = h.chrome.alarms.create;
+  h.chrome.alarms.create = async (...args) => { alarmCreated = true; return originalCreate(...args); };
+  await h.fire("tabGroupUpdated", collapsedGroup);
+  assert.equal(alarmCreated, false);
+  assert.equal(h.state.alarms.size, 0);
+});
+
+test("the recovery alarm does not abort an in-flight sweep", { timeout: 2000 }, async () => {
+  const h = managed({ tabs: [idleTab(), idleTab({ id: 2 })] });
+  const gate = pauseCall(h.chrome.tabs, "discard");
+  h.events.tabGroupUpdated.emit(collapsedGroup);
+  await gate.started;
+  // The sweep armed a recovery alarm at now + 30s; deliver it mid-sweep.
+  await h.advance(30_000);
+  gate.release();
+  await h.flush();
+  assert.deepEqual(h.state.discardCalls, [1, 2]);
+  // A single activity entry proves both tabs were discarded in one uninterrupted
+  // pass. If the alarm aborted the sweep, each tab would be a separate entry.
+  assert.equal(h.state.storage.activityLog.length, 1);
+  assert.equal(h.state.storage.activityLog[0].discardedCount, 2);
 });
 
 test("background never moves, closes, groups, or recreates tabs", () => {

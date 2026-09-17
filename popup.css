@@ -13,6 +13,8 @@
   box-sizing: border-box;
 }
 
+[hidden] { display: none !important; }
+
 html,
 body {
   background: transparent;
@@ -265,6 +267,19 @@ button:disabled, input:disabled, textarea:disabled { opacity: 0.55; cursor: wait
   font-size: 9px;
   line-height: 1.4;
 }
+
+.retry-button {
+  display: block;
+  width: 100%;
+  margin: 10px 0 0;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #263033;
+  color: var(--text);
+  font-size: 11px;
+}
+.retry-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

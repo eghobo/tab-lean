@@ -5,6 +5,7 @@ const elements = {
   exclusionsForm: document.querySelector("#exclusions-form"),
   idleTimeout: document.querySelector("#idle-timeout"),
   optimizationStrength: document.querySelector("#optimization-strength"),
+  retryButton: document.querySelector("#retry-button"),
   saveExclusions: document.querySelector("#save-exclusions"),
   strengthOutput: document.querySelector("#strength-output"),
   toast: document.querySelector("#toast"),
@@ -15,12 +16,14 @@ let exclusionsDirty = false;
 let savingExclusions = false;
 let toastTimer;
 
-function showToast(message, isError = false) {
+function showToast(message, isError = false, persistent = false) {
   clearTimeout(toastTimer);
   elements.toast.textContent = message;
   elements.toast.classList.toggle("error", isError);
   elements.toast.classList.add("visible");
-  toastTimer = setTimeout(() => elements.toast.classList.remove("visible"), 1800);
+  if (!persistent) {
+    toastTimer = setTimeout(() => elements.toast.classList.remove("visible"), 1800);
+  }
 }
 
 function strengthLabel(value) {
@@ -103,7 +106,7 @@ elements.exclusionsForm.addEventListener("submit", async (event) => {
     const excludedHosts = elements.excludedHosts.value.split(/\r?\n/).map(host => host.trim()).filter(Boolean);
     const state = await saveSettings({ excludedHosts });
     exclusionsDirty = false;
-    elements.excludedHosts.value = state.settings.excludedHosts.join("\n");
+    elements.excludedHosts.value = (state.settings.excludedHosts || []).join("\n");
     showToast("Saved sites to keep loaded.");
   } catch (error) {
     showToast(error.message, true);
@@ -125,6 +128,25 @@ elements.activityButton.addEventListener("click", async () => {
   }
 });
 
-sendMessage({ type: "getState" })
-  .then(renderState)
-  .catch((error) => showToast(error.message, true));
+async function loadState() {
+  elements.retryButton.hidden = true;
+  elements.toast.classList.remove("visible");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const state = await sendMessage({ type: "getState" });
+      renderState(state);
+      return;
+    } catch (error) {
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+        continue;
+      }
+      showToast(error.message, true, true);
+      elements.retryButton.hidden = false;
+    }
+  }
+}
+
+elements.retryButton.addEventListener("click", () => loadState());
+
+loadState();
