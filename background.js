@@ -5,8 +5,18 @@ const DEFAULT_SETTINGS = Object.freeze({
 
 const REVIEW_ALARM_PREFIX = "review-group:";
 const LEGACY_ALARM_PREFIXES = ["close-group:", "close-tab:"];
-const tabUsage = new Map();
+let tabUsage = new Map();
 let activityQueue = Promise.resolve();
+const optimizeInFlight = new Map();
+
+async function loadTabUsage() {
+  const { tabUsageData } = await chrome.storage.session.get("tabUsageData");
+  if (tabUsageData) tabUsage = new Map(tabUsageData);
+}
+
+async function saveTabUsage() {
+  await chrome.storage.session.set({ tabUsageData: [...tabUsage] });
+}
 
 function appendActivity(entry) {
   const operation = activityQueue.then(async () => {
@@ -53,15 +63,16 @@ function optimizationIntensity(settings) {
 
 function reviewDelay(settings) {
   const intensity = optimizationIntensity(settings);
-  return Math.round(30_000 + (1 - intensity) * 270_000);
+  return Math.max(60_000, Math.round(60_000 + (1 - intensity) * 240_000));
 }
 
-function recordTabActivation(tabId) {
+async function recordTabActivation(tabId) {
   const previous = tabUsage.get(tabId) || { activationCount: 0 };
   tabUsage.set(tabId, {
     activationCount: previous.activationCount + 1,
     lastActivatedAt: Date.now(),
   });
+  await saveTabUsage();
 }
 
 function calculateImportance(tab, now = Date.now()) {
@@ -107,8 +118,18 @@ async function scheduleNextReview(groupId, settings) {
   });
 }
 
-async function optimizeCollapsedGroup(groupId) {
-  const settings = await getSettings();
+function optimizeCollapsedGroup(groupId, preloadedSettings) {
+  const existing = optimizeInFlight.get(groupId);
+  if (existing) return existing;
+  const promise = optimizeCollapsedGroupImpl(groupId, preloadedSettings).finally(() => {
+    optimizeInFlight.delete(groupId);
+  });
+  optimizeInFlight.set(groupId, promise);
+  return promise;
+}
+
+async function optimizeCollapsedGroupImpl(groupId, preloadedSettings) {
+  const settings = preloadedSettings || (await getSettings());
   if (!settings.extensionEnabled) {
     await clearReviewAlarm(groupId);
     return;
@@ -154,10 +175,11 @@ async function optimizeCollapsedGroup(groupId) {
     });
   }
 
-  // Revisit only if a loaded tab remains. Its score may fall as it stays unused.
   const currentTabs = await chrome.tabs.query({ groupId });
-  const hasLoadedTabs = currentTabs.some((tab) => !tab.discarded);
-  if (hasLoadedTabs) {
+  const hasDiscardableTabs = currentTabs.some(
+    (tab) => !tab.discarded && !tab.active && !tab.audible,
+  );
+  if (hasDiscardableTabs) {
     await scheduleNextReview(groupId, settings);
   } else {
     await clearReviewAlarm(groupId);
@@ -173,7 +195,7 @@ async function optimizeAllCollapsedGroups() {
 
   const groups = await chrome.tabGroups.query({ collapsed: true });
   for (const group of groups) {
-    await optimizeCollapsedGroup(group.id);
+    await optimizeCollapsedGroup(group.id, settings);
   }
 }
 
@@ -183,14 +205,16 @@ async function removeLegacyClosingPlans() {
   if (!closingPlans.length) return;
 
   // Preserve recovery data from older development builds without closing anything else.
-  const recoveredGroups = closingPlans.map((plan) => ({
-    id: plan.id,
-    title: plan.title,
-    color: plan.color,
-    collapsed: plan.collapsed,
-    savedAt: Date.now(),
-    tabs: plan.tabs.map(({ title, url }) => ({ title, url })),
-  }));
+  const recoveredGroups = closingPlans
+    .filter((plan) => Array.isArray(plan?.tabs))
+    .map((plan) => ({
+      id: plan.id,
+      title: plan.title,
+      color: plan.color,
+      collapsed: plan.collapsed,
+      savedAt: Date.now(),
+      tabs: plan.tabs.map(({ title, url }) => ({ title, url })),
+    }));
   const savedGroups = stored.savedGroups || [];
   await chrome.storage.local.set({
     closingPlans: [],
@@ -211,6 +235,7 @@ async function resetCurrentActivityTracking() {
 }
 
 async function initializeBackgroundOptimization() {
+  await loadTabUsage();
   await clearAllManagementAlarms();
   await removeLegacyClosingPlans();
   await resetCurrentActivityTracking();
@@ -278,7 +303,7 @@ chrome.tabGroups.onRemoved.addListener((group) => {
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  recordTabActivation(tabId);
+  recordTabActivation(tabId).catch(console.error);
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
@@ -306,6 +331,19 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabUsage.delete(tabId);
+  saveTabUsage().catch(console.error);
+
+  const op = activityQueue.then(async () => {
+    const { activityStats = {} } = await chrome.storage.local.get("activityStats");
+    const managedTabIds = activityStats.managedTabIds || [];
+    const filtered = managedTabIds.filter((id) => id !== tabId);
+    if (filtered.length !== managedTabIds.length) {
+      await chrome.storage.local.set({
+        activityStats: { ...activityStats, managedTabIds: filtered },
+      });
+    }
+  });
+  activityQueue = op.catch(() => {});
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -329,13 +367,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "getActivityState":
         return getActivityState();
 
-      case "clearActivity":
-        await activityQueue.catch(() => {});
-        await chrome.storage.local.set({
-          activityLog: [],
-          activityStats: { totalDiscardActions: 0, managedTabIds: [] },
+      case "clearActivity": {
+        const clearOp = activityQueue.then(async () => {
+          await chrome.storage.local.set({
+            activityLog: [],
+            activityStats: { totalDiscardActions: 0, managedTabIds: [] },
+          });
         });
+        activityQueue = clearOp.catch(() => {});
+        await clearOp;
         return getActivityState();
+      }
 
       case "updateSettings": {
         const previousSettings = await getSettings();

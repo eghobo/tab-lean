@@ -1,4 +1,5 @@
 const elements = {
+  activityAnnounce: document.querySelector("#activity-announce"),
   activityList: document.querySelector("#activity-list"),
   clearButton: document.querySelector("#clear-button"),
   collapsedGroups: document.querySelector("#collapsed-groups"),
@@ -11,6 +12,7 @@ const elements = {
 };
 
 let currentSettings = { extensionEnabled: true, optimizationStrength: 80 };
+let lastLogLength = 0;
 let toastTimer;
 
 function showToast(message, isError = false) {
@@ -42,6 +44,13 @@ function activityIcon(type) {
 }
 
 function renderLog(activityLog) {
+  const newCount = activityLog.length - lastLogLength;
+  if (newCount > 0 && lastLogLength > 0) {
+    const newest = activityLog.slice(0, newCount).map((e) => e.message).join(". ");
+    elements.activityAnnounce.textContent = newest;
+  }
+  lastLogLength = activityLog.length;
+
   if (!activityLog.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
@@ -114,6 +123,7 @@ elements.statusButton.addEventListener("click", async () => {
 
 elements.clearButton.addEventListener("click", async () => {
   elements.clearButton.disabled = true;
+  lastLogLength = 0;
   try {
     renderState(await sendMessage({ type: "clearActivity" }));
   } catch (error) {
@@ -124,6 +134,9 @@ elements.clearButton.addEventListener("click", async () => {
 });
 
 refresh().catch((error) => showToast(error.message, true));
-setInterval(() => {
-  if (!document.hidden) refresh().catch(() => {});
-}, 2000);
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && (changes.activityLog || changes.activityStats || changes.settings)) {
+    if (!document.hidden) refresh().catch(() => {});
+  }
+});

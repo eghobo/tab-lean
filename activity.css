@@ -5,7 +5,7 @@
   --line: rgb(255 255 255 / 9%);
   --text: #f3f6f6;
   --muted: #929b9e;
-  --subtle: #626b6e;
+  --subtle: #8a9295;
   --accent: #65d4c3;
   --success: #6de0ae;
   --danger: #ff7185;
@@ -166,3 +166,5 @@ button { font: inherit; cursor: pointer; }
   .activity-row { grid-template-columns: 32px 1fr; }
   .activity-time { grid-column: 2; }
 }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

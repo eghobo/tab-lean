@@ -36,12 +36,13 @@
           <div><h2>Event log</h2><p>Stored locally on this device</p></div>
           <button id="clear-button" class="quiet-button" type="button">Clear</button>
         </div>
-        <div id="activity-list" class="activity-list" aria-live="polite"></div>
+        <div id="activity-list" class="activity-list"></div>
+        <div id="activity-announce" class="sr-only" aria-live="polite" aria-atomic="true"></div>
       </section>
 
       <p class="console-note">Raw console: <code>chrome://extensions</code> → TabLean → service worker</p>
     </main>
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="toast" class="toast" role="alert" aria-live="assertive"></div>
     <script src="activity.js"></script>
   </body>
 </html>

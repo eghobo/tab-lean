@@ -1,5 +1,6 @@
 const elements = {
   activityButton: document.querySelector("#activity-button"),
+  disabledNotice: document.querySelector("#disabled-notice"),
   optimizationStrength: document.querySelector("#optimization-strength"),
   strengthOutput: document.querySelector("#strength-output"),
   toast: document.querySelector("#toast"),
@@ -35,6 +36,7 @@ function renderState(state) {
   const { settings } = state;
   extensionEnabled = settings.extensionEnabled !== false;
   elements.optimizationStrength.value = settings.optimizationStrength ?? 80;
+  elements.disabledNotice.hidden = extensionEnabled;
   updateStrengthAppearance();
 }
 

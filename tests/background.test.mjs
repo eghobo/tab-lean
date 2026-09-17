@@ -29,6 +29,7 @@ function createHarness({ groups = [], tabs = [], stored = {} } = {}) {
     alarms: new Map(),
     discardCalls: [],
     groups: new Map(groups.map((group) => [group.id, { ...group }])),
+    sessionStorage: {},
     storage: structuredClone(stored),
     tabs: new Map(tabs.map((tab) => [tab.id, { ...tab }])),
   };
@@ -75,6 +76,21 @@ function createHarness({ groups = [], tabs = [], stored = {} } = {}) {
           return structuredClone(state.storage);
         },
         set: async (values) => Object.assign(state.storage, structuredClone(values)),
+      },
+      session: {
+        get: async (keys) => {
+          if (typeof keys === "string") {
+            return { [keys]: structuredClone(state.sessionStorage[keys]) };
+          }
+          if (Array.isArray(keys)) {
+            return Object.fromEntries(
+              keys.map((key) => [key, structuredClone(state.sessionStorage[key])]),
+            );
+          }
+          return structuredClone(state.sessionStorage);
+        },
+        set: async (values) =>
+          Object.assign(state.sessionStorage, structuredClone(values)),
       },
     },
     tabGroups: {
@@ -249,6 +265,88 @@ test("disabling stops background optimization and clears review alarms", async (
   assert.equal(state.settings.extensionEnabled, false);
   assert.equal(harness.state.tabs.get(1).discarded, false);
   assert.equal(harness.state.alarms.size, 0);
+});
+
+test("audible-only group does not reschedule alarms indefinitely", async () => {
+  const tabs = [idleTab({ audible: true, id: 1 })];
+  const harness = createHarness({ groups: [collapsedGroup], tabs });
+
+  await harness.events.installed.emitAsync();
+
+  assert.equal(harness.state.discardCalls.length, 0);
+  assert.equal(harness.state.alarms.size, 0);
+});
+
+test("expanding a group clears its review alarm", async () => {
+  const tabs = [idleTab({ id: 1 }), idleTab({ id: 2, audible: true })];
+  const harness = createHarness({ groups: [collapsedGroup], tabs });
+  await harness.events.installed.emitAsync();
+
+  assert.equal(harness.state.tabs.get(1).discarded, true);
+
+  harness.state.groups.get(7).collapsed = false;
+  await harness.events.tabGroupUpdated.emitAsync({ ...collapsedGroup, collapsed: false });
+
+  assert.equal(harness.state.alarms.size, 0);
+});
+
+test("alarm fires and triggers optimization for the group", async () => {
+  const tabs = [idleTab({ id: 1, audible: true }), idleTab({ id: 2 })];
+  const harness = createHarness({ groups: [collapsedGroup], tabs });
+  await harness.events.installed.emitAsync();
+
+  assert.equal(harness.state.tabs.get(2).discarded, true);
+  harness.state.tabs.get(2).discarded = false;
+  harness.state.discardCalls.length = 0;
+
+  harness.events.alarm.emit({ name: "review-group:7" });
+  await new Promise((r) => setTimeout(r, 50));
+
+  assert.equal(harness.state.tabs.get(2).discarded, true);
+  assert.deepEqual(harness.state.discardCalls, [2]);
+});
+
+test("removing a group clears its review alarm", async () => {
+  const tabs = [idleTab({ id: 1, audible: true }), idleTab({ id: 2 })];
+  const harness = createHarness({ groups: [collapsedGroup], tabs });
+  await harness.events.installed.emitAsync();
+
+  await harness.events.tabGroupRemoved.emitAsync(collapsedGroup);
+
+  assert.equal(harness.state.alarms.size, 0);
+});
+
+test("tab activation counts persist across harness reloads via session storage", async () => {
+  const harness = createHarness({ groups: [collapsedGroup], tabs: [idleTab()] });
+  await harness.events.installed.emitAsync();
+
+  await harness.events.tabActivated.emitAsync({ tabId: 1 });
+
+  assert.ok(harness.state.sessionStorage.tabUsageData);
+  const entries = harness.state.sessionStorage.tabUsageData;
+  const tab1Entry = entries.find(([id]) => id === 1);
+  assert.ok(tab1Entry);
+  assert.equal(tab1Entry[1].activationCount, 1);
+});
+
+test("disabling clears alarms that were previously scheduled", async () => {
+  const tabs = [idleTab({ id: 1, audible: true }), idleTab({ id: 2 })];
+  const harness = createHarness({ groups: [collapsedGroup], tabs });
+  await harness.events.installed.emitAsync();
+
+  assert.ok(harness.state.alarms.size > 0 || harness.state.tabs.get(2).discarded);
+
+  await harness.message({
+    type: "updateSettings",
+    settings: { extensionEnabled: false, optimizationStrength: 80 },
+  });
+
+  assert.equal(harness.state.alarms.size, 0);
+});
+
+test("unknown message type returns an error", async () => {
+  const harness = createHarness();
+  await assert.rejects(() => harness.message({ type: "bogus" }), /Unknown request/);
 });
 
 test("activity state reports exact discard counts and can be cleared", async () => {

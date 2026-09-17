@@ -3,7 +3,7 @@
   --line: rgb(255 255 255 / 9%);
   --text: #f3f6f6;
   --muted: #929b9e;
-  --subtle: #626b6e;
+  --subtle: #8a9295;
   --accent: #65d4c3;
   --success: #6de0ae;
   --danger: #ff7185;
@@ -235,6 +235,17 @@ input[type="range"]:focus-visible {
 .toast.error {
   border-color: rgb(255 113 133 / 22%);
   background: rgb(84 29 40 / 96%);
+}
+
+.disabled-notice {
+  margin: 10px 0 0;
+  padding: 8px 11px;
+  border: 1px solid rgb(255 113 133 / 15%);
+  border-radius: 10px;
+  background: rgb(255 113 133 / 6%);
+  color: var(--danger);
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 @media (prefers-reduced-motion: reduce) {
