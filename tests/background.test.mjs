@@ -316,17 +316,34 @@ test("removing a group clears its review alarm", async () => {
   assert.equal(harness.state.alarms.size, 0);
 });
 
-test("tab activation counts persist across harness reloads via session storage", async () => {
-  const harness = createHarness({ groups: [collapsedGroup], tabs: [idleTab()] });
-  await harness.events.installed.emitAsync();
+test("tab activation counts persist and reload on alarm wake (simulated SW restart)", async () => {
+  const recentTab = idleTab({ id: 1, lastAccessed: Date.now() - 45_000 });
+  const harness1 = createHarness({ groups: [collapsedGroup], tabs: [recentTab] });
+  await harness1.events.installed.emitAsync();
 
-  await harness.events.tabActivated.emitAsync({ tabId: 1 });
+  for (let i = 0; i < 7; i++) {
+    await harness1.events.tabActivated.emitAsync({ tabId: 1 });
+  }
 
-  assert.ok(harness.state.sessionStorage.tabUsageData);
-  const entries = harness.state.sessionStorage.tabUsageData;
-  const tab1Entry = entries.find(([id]) => id === 1);
-  assert.ok(tab1Entry);
-  assert.equal(tab1Entry[1].activationCount, 1);
+  assert.ok(harness1.state.sessionStorage.tabUsageData);
+  const saved = harness1.state.sessionStorage.tabUsageData;
+  const entry = saved.find(([id]) => id === 1);
+  assert.equal(entry[1].activationCount, 7);
+
+  const harness2 = createHarness({
+    groups: [collapsedGroup],
+    tabs: [{ ...recentTab, discarded: false }],
+  });
+  harness2.state.sessionStorage = harness1.state.sessionStorage;
+
+  harness2.events.alarm.emit({ name: "review-group:7" });
+  await new Promise((r) => setTimeout(r, 50));
+
+  assert.equal(
+    harness2.state.tabs.get(1).discarded,
+    false,
+    "tab with 7 activations should be kept by repeat-use scoring after SW restart",
+  );
 });
 
 test("disabling clears alarms that were previously scheduled", async () => {
@@ -342,6 +359,21 @@ test("disabling clears alarms that were previously scheduled", async () => {
   });
 
   assert.equal(harness.state.alarms.size, 0);
+});
+
+test("audio stop on a tab re-triggers optimization for its collapsed group", async () => {
+  const tabs = [idleTab({ id: 1, audible: true })];
+  const harness = createHarness({ groups: [collapsedGroup], tabs });
+  await harness.events.installed.emitAsync();
+
+  assert.equal(harness.state.tabs.get(1).discarded, false);
+  assert.equal(harness.state.alarms.size, 0);
+
+  harness.state.tabs.get(1).audible = false;
+  harness.events.tabUpdated.emit(1, { audible: false }, harness.state.tabs.get(1));
+  await new Promise((r) => setTimeout(r, 50));
+
+  assert.equal(harness.state.tabs.get(1).discarded, true);
 });
 
 test("unknown message type returns an error", async () => {

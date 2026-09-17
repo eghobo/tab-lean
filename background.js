@@ -6,12 +6,15 @@ const DEFAULT_SETTINGS = Object.freeze({
 const REVIEW_ALARM_PREFIX = "review-group:";
 const LEGACY_ALARM_PREFIXES = ["close-group:", "close-tab:"];
 let tabUsage = new Map();
+let tabUsageLoaded = false;
 let activityQueue = Promise.resolve();
 const optimizeInFlight = new Map();
 
-async function loadTabUsage() {
+async function ensureTabUsageLoaded() {
+  if (tabUsageLoaded) return;
   const { tabUsageData } = await chrome.storage.session.get("tabUsageData");
   if (tabUsageData) tabUsage = new Map(tabUsageData);
+  tabUsageLoaded = true;
 }
 
 async function saveTabUsage() {
@@ -67,6 +70,7 @@ function reviewDelay(settings) {
 }
 
 async function recordTabActivation(tabId) {
+  await ensureTabUsageLoaded();
   const previous = tabUsage.get(tabId) || { activationCount: 0 };
   tabUsage.set(tabId, {
     activationCount: previous.activationCount + 1,
@@ -129,6 +133,7 @@ function optimizeCollapsedGroup(groupId, preloadedSettings) {
 }
 
 async function optimizeCollapsedGroupImpl(groupId, preloadedSettings) {
+  await ensureTabUsageLoaded();
   const settings = preloadedSettings || (await getSettings());
   if (!settings.extensionEnabled) {
     await clearReviewAlarm(groupId);
@@ -235,7 +240,6 @@ async function resetCurrentActivityTracking() {
 }
 
 async function initializeBackgroundOptimization() {
-  await loadTabUsage();
   await clearAllManagementAlarms();
   await removeLegacyClosingPlans();
   await resetCurrentActivityTracking();
@@ -319,7 +323,12 @@ chrome.tabs.onCreated.addListener((tab) => {
 });
 
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-  if (changeInfo.groupId === undefined || tab.groupId === -1) return;
+  if (tab.groupId === undefined || tab.groupId === -1) return;
+  const relevant =
+    changeInfo.groupId !== undefined ||
+    changeInfo.audible !== undefined ||
+    changeInfo.status === "complete";
+  if (!relevant) return;
   chrome.tabGroups
     .get(tab.groupId)
     .then((group) => {

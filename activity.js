@@ -140,3 +140,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!document.hidden) refresh().catch(() => {});
   }
 });
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refresh().catch(() => {});
+});
+
+setInterval(() => {
+  if (!document.hidden) refresh().catch(() => {});
+}, 15_000);
