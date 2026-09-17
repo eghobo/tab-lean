@@ -15,6 +15,7 @@
         </div>
         <button id="status-button" class="status-button" type="button" aria-pressed="true">
           <span class="status-dot" aria-hidden="true"></span>
+          <span class="sr-only">Background optimization</span>
           <span id="status-label">Enabled</span>
         </button>
       </header>
@@ -34,7 +35,7 @@
       <section class="log-card">
         <div class="log-header">
           <div><h2>Event log</h2><p>Stored locally on this device</p></div>
-          <button id="clear-button" class="quiet-button" type="button">Clear</button>
+          <button id="clear-button" class="quiet-button" type="button" aria-label="Clear event log and statistics">Clear</button>
         </div>
         <div id="activity-list" class="activity-list"></div>
         <div id="activity-announce" class="sr-only" aria-live="polite" aria-atomic="true"></div>

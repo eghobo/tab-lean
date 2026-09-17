@@ -126,7 +126,7 @@ button {
   border-radius: 999px;
   background: rgb(101 212 195 / 7%);
   color: #9ddbd2;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 680;
 }
 
@@ -169,7 +169,7 @@ button {
 
 .range-label output {
   color: #82d7c9;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -201,7 +201,7 @@ input[type="range"]:focus-visible {
 .range-scale {
   margin-top: 7px;
   color: var(--subtle);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .strength-hint {
@@ -264,7 +264,7 @@ button:disabled, input:disabled, textarea:disabled { opacity: 0.55; cursor: wait
   border-radius: 10px;
   background: rgb(255 113 133 / 6%);
   color: var(--danger);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.4;
 }
 
