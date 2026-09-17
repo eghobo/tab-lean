@@ -45,7 +45,10 @@
       </details>
 
       <p id="disabled-notice" class="disabled-notice" hidden>Background optimization is paused. Enable it on the Activity page.</p>
-      <button id="retry-button" type="button" class="retry-button" hidden>Retry</button>
+      <div id="load-error" class="load-error" role="alert" hidden>
+        <p id="load-error-message"></p>
+        <button id="retry-button" type="button" class="retry-button">Retry</button>
+      </div>
     </main>
 
     <div id="toast" class="toast" role="alert" aria-live="assertive"></div>

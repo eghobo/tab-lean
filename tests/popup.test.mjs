@@ -164,7 +164,7 @@ test("a transient getState failure retries automatically and renders on success"
   assert.equal(h.elements.get("excluded-hosts").disabled, false);
 });
 
-test("all getState retries exhausted shows persistent error with a Retry button", async () => {
+test("all getState retries exhausted shows an in-flow error block with a Retry button", async () => {
   const h = createPopup();
   // Reject all automatic attempts (initial + 2 retries = 3 total).
   await h.respond(0, undefined, "No response");
@@ -175,24 +175,22 @@ test("all getState retries exhausted shows persistent error with a Retry button"
   // Controls must remain disabled.
   assert.equal(h.elements.get("optimization-strength").disabled, true);
   assert.equal(h.elements.get("excluded-hosts").disabled, true);
-  // A persistent error is visible (not auto-cleared) and marked as error.
-  assert.match(h.elements.get("toast").textContent, /No response/);
-  assert.equal(h.elements.get("toast").classList.has("error"), true, "toast carries error class");
-  // A retry button exists and is visible.
-  const retryBtn = h.elements.get("retry-button");
-  assert.ok(retryBtn, "retry button is present in DOM");
-  assert.equal(retryBtn.hidden, false, "retry button is visible after failure");
+  // The error message renders in the in-flow error block, not in the toast.
+  const errorBlock = h.elements.get("load-error");
+  assert.equal(errorBlock.hidden, false, "error block is visible after failure");
+  assert.match(h.elements.get("load-error-message").textContent, /No response/);
+  assert.equal(h.elements.get("toast").classList.has("visible"), false, "toast is not showing the error");
   // Clicking Retry fires a fresh getState.
   const beforeCount = h.requests.length;
-  retryBtn.emit("click");
+  h.elements.get("retry-button").emit("click");
   await h.flush();
   assert.ok(h.requests.length > beforeCount, "retry issued a fresh getState");
   assert.deepEqual(h.requests[h.requests.length - 1].message, { type: "getState" });
-  // Respond successfully - controls should now be enabled.
+  // Respond successfully - controls should now be enabled and error block hidden.
   await h.respond(h.requests.length - 1);
   assert.equal(h.elements.get("optimization-strength").disabled, false);
   assert.equal(h.elements.get("excluded-hosts").disabled, false);
-  assert.equal(retryBtn.hidden, true, "retry button hidden after success");
+  assert.equal(errorBlock.hidden, true, "error block hidden after success");
 });
 
 test("submit handler tolerates a response without excludedHosts", async () => {
@@ -208,6 +206,23 @@ test("submit handler tolerates a response without excludedHosts", async () => {
   assert.match(h.elements.get("toast").textContent, /Saved/);
   assert.equal(hosts.disabled, false);
   assert.equal(h.elements.get("save-exclusions").disabled, false);
+});
+
+test("final getState failure renders the error in the in-flow error block, not in the toast", async () => {
+  const h = createPopup();
+  // Reject all automatic attempts (initial + 2 retries = 3 total).
+  await h.respond(0, undefined, "No response");
+  await h.advanceTimers();
+  await h.respond(1, undefined, "No response");
+  await h.advanceTimers();
+  await h.respond(2, undefined, "No response");
+  // The error message and retry button must be inside the in-flow error block.
+  const errorBlock = h.elements.get("load-error");
+  assert.ok(errorBlock, "in-flow error block exists");
+  assert.equal(errorBlock.hidden, false, "error block is visible after failure");
+  // The toast must not be carrying the error message.
+  assert.equal(h.elements.get("toast").classList.has("visible"), false, "toast is not visible");
+  assert.equal(h.elements.get("toast").classList.has("error"), false, "toast has no error class");
 });
 
 test("popup.css declares a hidden-attribute rule to prevent display overrides", () => {

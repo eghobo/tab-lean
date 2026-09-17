@@ -4,6 +4,8 @@ const elements = {
   excludedHosts: document.querySelector("#excluded-hosts"),
   exclusionsForm: document.querySelector("#exclusions-form"),
   idleTimeout: document.querySelector("#idle-timeout"),
+  loadError: document.querySelector("#load-error"),
+  loadErrorMessage: document.querySelector("#load-error-message"),
   optimizationStrength: document.querySelector("#optimization-strength"),
   retryButton: document.querySelector("#retry-button"),
   saveExclusions: document.querySelector("#save-exclusions"),
@@ -16,14 +18,12 @@ let exclusionsDirty = false;
 let savingExclusions = false;
 let toastTimer;
 
-function showToast(message, isError = false, persistent = false) {
+function showToast(message, isError = false) {
   clearTimeout(toastTimer);
   elements.toast.textContent = message;
   elements.toast.classList.toggle("error", isError);
   elements.toast.classList.add("visible");
-  if (!persistent) {
-    toastTimer = setTimeout(() => elements.toast.classList.remove("visible"), 1800);
-  }
+  toastTimer = setTimeout(() => elements.toast.classList.remove("visible"), 1800);
 }
 
 function strengthLabel(value) {
@@ -129,8 +129,7 @@ elements.activityButton.addEventListener("click", async () => {
 });
 
 async function loadState() {
-  elements.retryButton.hidden = true;
-  elements.toast.classList.remove("visible");
+  elements.loadError.hidden = true;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const state = await sendMessage({ type: "getState" });
@@ -141,8 +140,8 @@ async function loadState() {
         await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
         continue;
       }
-      showToast(error.message, true, true);
-      elements.retryButton.hidden = false;
+      elements.loadErrorMessage.textContent = error.message;
+      elements.loadError.hidden = false;
     }
   }
 }

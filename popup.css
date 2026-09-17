@@ -268,10 +268,25 @@ button:disabled, input:disabled, textarea:disabled { opacity: 0.55; cursor: wait
   line-height: 1.4;
 }
 
+.load-error {
+  margin: 10px 0 0;
+  padding: 8px 11px;
+  border: 1px solid rgb(255 113 133 / 15%);
+  border-radius: 10px;
+  background: rgb(255 113 133 / 6%);
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.load-error p {
+  margin: 0;
+}
+
 .retry-button {
   display: block;
   width: 100%;
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   padding: 7px;
   border: 1px solid var(--line);
   border-radius: 10px;
